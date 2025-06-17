@@ -1,42 +1,42 @@
 esphome:
-  name: esp-akeron
-  friendly_name: esp-akeron
+  name: hackeron-esp
+  friendly_name: hackeron-esp
   min_version: 2025.5.0
   name_add_mac_suffix: false
 
   on_boot:
-    priority: -100  # Run after all other components are initialized
+    priority: -100 # Run after all other components are initialized
     then:
-    - delay: 30s  # Wait 30 seconds after boot to ensure everything is ready
-    - logger.log: "Boot completed - starting BLE scanner"
-    - lambda: |-
-        id(scanner_active) = true;
-        id(akeron_found) = false;
-    - script.execute: start_scanning
+      - delay: 30s # Wait 30 seconds after boot to ensure everything is ready
+      - logger.log: "Boot completed - starting BLE scanner"
+      - lambda: |-
+          id(scanner_active) = true;
+          id(akeron_found) = false;
+      - script.execute: start_scanning
 
 substitutions:
- mac_akeron: "B4:E3:F9:74:26:E5"
+  #replace here your bluetooh mac address
+  mac_akeron: "B4:E3:F9:65:71:74"
 
 esp32:
   board: esp32dev
   framework:
-    type: esp-idf    
+    type: esp-idf
 
-
-
-# Enable Home Assistant API
+#Enable Home Assistant API
 api:
   encryption:
-    key: "d7Uyg5zPdXYF3SkRxz+TJayb3E6Mk6Bw/m2vxzWC8tM="
+    key: "zTxYwJqDfxLkh7Uo6ZF/9k55EZfdl6zIaEeWB9by3hU="
 
 ota:
   - platform: esphome
+    password: "c336d525339f21a3c1d48f6a05402878"
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
+#Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: "Esp-Akeron Fallback Hotspot"
     password: !secret wifi_password
@@ -204,25 +204,41 @@ interval:
               - lambda: 'return id(akeron).connected();'
           then:
             - lambda: 'ESP_LOGD("data_request", "BLE Data Request");'
-
+            #trame M 10
             - ble_client.ble_write:
                 service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
                 characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
                 value: [ 42, 82, 63, 77, 10, 42]
 
             - delay: 5s
-
+            #trame S 83
             - ble_client.ble_write:
                 service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
                 characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
                 value: [ 42, 82, 63, 83, 20, 42]
 
             - delay: 5s
-
+            #trame A 65
             - ble_client.ble_write:
                 service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
                 characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
                 value: [ 42, 82, 63, 65, 6, 42]
+
+            - delay: 5s
+            #trame E 69
+            - ble_client.ble_write:
+                service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                value: !lambda |- 
+                  std::vector<unsigned char> result { 42,82,63,69,255,42 };
+                  //calcul CRC
+                  uint8_t crc = 0;
+                  for( int c=0; c < result.size()-2; c++){
+                    crc =(uint8_t) (crc ^ result[c]);     // ^ou eclusif bit a bit
+                  }
+                  result[ result.size()-2 ] = crc;
+                  //end CRC
+                  return result;
 
 binary_sensor:
   - platform: template
@@ -269,7 +285,17 @@ sensor:
     icon: "mdi:ph"
     accuracy_decimals: 2
     device_class: ph
-    state_class: measurement
+    #try to remove measurement to have real stat into HA
+    state_class: ""
+  
+  - platform: template
+    name: "Akeron Redox"
+    id: akeron_redox
+    unit_of_measurement: "mV"
+    icon: "mdi:alpha-r-box-outline"
+    accuracy_decimals: 0
+    device_class: voltage
+    state_class: ""
 
   - platform: template
     name: "Akeron Water Temperature"
@@ -277,7 +303,8 @@ sensor:
     unit_of_measurement: "°C"
     icon: "mdi:thermometer"
     device_class: "temperature"
-    state_class: "measurement"
+    #try to remove measurement to have real stat into HA
+    state_class: ""
     accuracy_decimals: 2
 
   - platform: template
@@ -286,7 +313,8 @@ sensor:
     unit_of_measurement: "g"
     icon: "mdi:alpha-s-box-outline"
     device_class: "weight"
-    state_class: "measurement"
+    #try to remove measurement to have real stat into HA
+    state_class: ""
     accuracy_decimals: 2
 
   - platform: template
@@ -312,6 +340,15 @@ sensor:
     accuracy_decimals: 2
     unit_of_measurement: "pH"
     device_class: ph
+    state_class: measurement
+  
+  - platform: template
+    name: "Akeron Redox Setpoint"
+    id: akeron_redox_setpoint
+    unit_of_measurement: "mV"
+    icon: "mdi:alpha-r-box-outline"
+    accuracy_decimals: 0
+    device_class: voltage
     state_class: measurement
 
   - platform: template
@@ -369,6 +406,11 @@ sensor:
           float salt = ( ( x[7] * 256 ) +  x[8] ) / 10.0;
           if ( (salt <= 10 ) && ( salt >= 0) ) {
             id(akeron_salt).publish_state(salt);
+          }
+
+          float redox = ( ( x[3] * 256 ) +  x[4] );
+          if ( (redox <= 1000) && (redox >= 350)){
+            id(akeron_redox).publish_state(redox);
           }
 
           int alarm = x[9];
@@ -461,9 +503,28 @@ sensor:
           float ph_setpoint = ( ( x[1] * 256 ) +  x[2] ) / 100.0;
           if (ph_setpoint > 3 && ph_setpoint < 11) {
             id(akeron_ph_setpoint).publish_state(ph_setpoint);
+
+            if ( id(akeron_ph_setpoint_number).state != ph_setpoint){
+              auto call = id(akeron_ph_setpoint_number).make_call();
+              call.set_value(ph_setpoint);
+              call.perform();
+            }
           }
           else {
             id(akeron_ph_setpoint).publish_state(NAN);
+          }
+        }
+        //Trame E 69
+        else if (x[0] == 69) {
+          ESP_LOGD("akeron_data", "Akeron Frame E");
+
+          float redox_setpoint = ( x[1] * 256 ) +  x[2] ;
+          id(akeron_redox_setpoint).publish_state(redox_setpoint);
+          
+          if ( id(akeron_redox_setpoint_number).state != redox_setpoint){
+            auto call = id(akeron_redox_setpoint_number).make_call();
+            call.set_value(redox_setpoint);
+            call.perform();
           }
         }
         // Trame A
@@ -482,6 +543,12 @@ sensor:
           id(akeron_elx_alarm).publish_state(alarm_elx);
 
           id(akeron_elx).publish_state(x[1]);
+          
+          if ( id(akeron_elx_setpoint_number).state != x[1]){
+            auto call = id(akeron_elx_setpoint_number).make_call();
+            call.set_value(x[1]);
+            call.perform();
+          }
 
           // need to check registers 
           float boost_time = ( ( x[2] * 256 ) +  x[3] );
@@ -496,6 +563,144 @@ sensor:
       }
       return 0;
 
+#  name: "Akeron PH Setpoint"
+#    id: akeron_ph_setpoint
+number:
+  - platform: template
+    name: 'Akeron PH Set'
+    id: akeron_ph_setpoint_number
+    max_value: 7.8
+    min_value: 6.5
+    step: 0.05
+    mode: slider
+    optimistic: true
+    icon: "mdi:ph"
+    set_action: 
+      then:
+        #ESP_LOGI("NUMBER", "PH change Value, send to BLE");
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Value PH set point on Akeron");
+    
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            #value: [ 42, 82, 63, 77, 10, 42]
+            value: !lambda |- 
+              int consigneTmp = round(x * 100.0);
+              uint8_t val3 = (consigneTmp >> 8);
+              uint8_t val4 = consigneTmp & 0xff;
+
+              std::vector<unsigned char> result { 42, 83, val3, val4, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 42 };
+              
+              //calcul CRC
+              uint8_t crc = 0;
+              for( int c=0; c < result.size()-2; c++){
+                crc =(uint8_t) (crc ^ result[c]);     // ^ou eclusif bit a bit
+              }
+              result[ result.size()-2 ] = crc;
+              //end CRC
+              
+              return result;
+        - delay: 3s
+        #trame S
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 83, 20, 42]
+    
+  - platform: template
+    name: 'Akeron Elx Set'
+    id: akeron_elx_setpoint_number
+    max_value: 100
+    min_value: 0
+    unit_of_measurement: '%'
+    step: 10
+    mode: slider
+    optimistic: true
+    icon: "mdi:electron-framework"
+    set_action: 
+      then:
+        #ESP_LOGI("NUMBER", "PH change Value, send to BLE");
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Value ELX set point on Akeron");
+    
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |- 
+              uint8_t val2 = x;
+
+              std::vector<unsigned char> result { 42, 65, val2, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 42 };
+              
+              //calcul CRC
+              uint8_t crc = 0;
+              for( int c=0; c < result.size()-2; c++){
+                crc =(uint8_t) (crc ^ result[c]);     // ^ou eclusif bit a bit
+              }
+              result[ result.size()-2 ] = crc;
+              //end CRC
+              
+              return result;
+        - delay: 3s
+        #trame A
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 65, 6, 42]
+
+  - platform: template
+    name: 'Akeron Redox Set'
+    id: akeron_redox_setpoint_number
+    max_value: 1100
+    min_value: 400
+    unit_of_measurement: 'mV'
+    step: 10
+    icon: "mdi:alpha-r-box-outline"
+    mode: slider
+    optimistic: true
+    set_action: 
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Value REDOX set point on Akeron");
+    
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |- 
+
+              int val = x;
+              uint8_t val2 = ( val >> 8);
+              uint8_t val3 = val & 0xff;
+
+              std::vector<unsigned char> result { 42, 69, val2, val3, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 42 };
+              
+              //calcul CRC
+              uint8_t crc = 0;
+              for( int c=0; c < result.size()-2; c++){
+                crc =(uint8_t) (crc ^ result[c]);     // ^ou eclusif bit a bit
+              }
+              result[ result.size()-2 ] = crc;
+              //end CRC
+              
+              return result;
+        - delay: 3s
+        #trame E
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |- 
+              std::vector<unsigned char> result { 42,82,63,69,255,42 };
+              //calcul CRC
+              uint8_t crc = 0;
+              for( int c=0; c < result.size()-2; c++){
+                crc =(uint8_t) (crc ^ result[c]);     // ^ou eclusif bit a bit
+              }
+              result[ result.size()-2 ] = crc;
+              //end CRC
+              return result;
+
+                        
+                
 
 # Logger must be at least debug (default)
 logger:
