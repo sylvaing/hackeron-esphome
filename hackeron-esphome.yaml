@@ -1,0 +1,502 @@
+esphome:
+  name: esp-akeron
+  friendly_name: esp-akeron
+  min_version: 2025.5.0
+  name_add_mac_suffix: false
+
+  on_boot:
+    priority: -100  # Run after all other components are initialized
+    then:
+    - delay: 30s  # Wait 30 seconds after boot to ensure everything is ready
+    - logger.log: "Boot completed - starting BLE scanner"
+    - lambda: |-
+        id(scanner_active) = true;
+        id(akeron_found) = false;
+    - script.execute: start_scanning
+
+substitutions:
+ mac_akeron: "B4:E3:F9:74:26:E5"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf    
+
+
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "d7Uyg5zPdXYF3SkRxz+TJayb3E6Mk6Bw/m2vxzWC8tM="
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esp-Akeron Fallback Hotspot"
+    password: !secret wifi_password
+
+captive_portal:
+
+#bluetooth_proxy:
+#  active: true
+
+globals:
+  - id: scanner_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: akeron_found
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+# Scripts for controlling scanning
+script:
+  - id: start_scanning
+    then:
+      - if:
+          condition:
+            lambda: 'return id(scanner_active);'
+          then:
+            - logger.log: "Starting BLE scan..."
+            - esp32_ble_tracker.start_scan:
+                continuous: true
+  
+  - id: stop_scanning
+    then:
+      - logger.log: "Stopping BLE scan..."
+      - esp32_ble_tracker.stop_scan:
+
+
+esp32_ble_tracker:
+  scan_parameters:
+    duration: 30s
+    interval: 1349ms
+    window: 449ms
+    active: false
+
+  on_ble_advertise:
+      then:
+        - lambda: |-
+            ESP_LOGD("ble_adv", "New BLE device");
+            ESP_LOGD("ble_adv", "  address: %s", x.address_str().c_str());
+            ESP_LOGD("ble_adv", "  name: %s", x.get_name().c_str());
+            ESP_LOGD("ble_adv", "  Advertised service UUIDs:");
+            for (auto uuid : x.get_service_uuids()) {
+                ESP_LOGD("ble_adv", "    - %s", uuid.to_string().c_str());
+            }
+            ESP_LOGD("ble_adv", "  Advertised service data:");
+            for (auto data : x.get_service_datas()) {
+                ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_string().c_str(), data.data.size());
+            }
+            ESP_LOGD("ble_adv", "  Advertised manufacturer data:");
+            for (auto data : x.get_manufacturer_datas()) {
+                ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_string().c_str(), data.data.size());
+            }
+
+ble_client:
+  - mac_address: ${mac_akeron}   
+    id: akeron
+    on_connect:
+      then:
+        - lambda: |-
+            ESP_LOGD("ble_client", "Connected to AKERON!");
+
+        - lambda: |-
+            // Stop scanning when connected
+            id(scanner_active) = false;
+        - script.execute: stop_scanning
+
+    on_disconnect:
+      then:
+        - lambda: |-
+            ESP_LOGD("ble_client", "Disconnected from AKERON");
+
+            // Resume scanning when disconnected
+            id(scanner_active) = true;
+            id(akeron_found) =  false;
+            id(akeron_ph).publish_state(NAN);
+            id(akeron_water_temp).publish_state(NAN);
+            id(akeron_salt).publish_state(NAN);
+            id(akeron_alarm).publish_state(NAN);
+            id(akeron_warning).publish_state(NAN);
+            id(akeron_elx).publish_state(NAN);
+            id(akeron_ph_setpoint).publish_state(NAN);
+            id(akeron_boost_time).publish_state(NAN);
+            id(akeron_elx_alarm).publish_state(NAN);
+            id(akeron_boost).publish_state(false);
+            id(akeron_elx_pump).publish_state(false);
+            id(akeron_flow_switch).publish_state(false);
+            id(akeron_forced_pump).publish_state(false);
+            id(akeron_ph_pump).publish_state(false);
+            id(akeron_warning_text).publish_state("");
+            id(akeron_alarm_text).publish_state("");
+
+        - script.execute: start_scanning
+
+switch:
+  - platform: template
+    name: "BLE Scanner"
+    id: ble_scanner_switch
+    lambda: |-
+      return id(scanner_active);
+    turn_on_action:
+      - lambda: |-
+          id(scanner_active) = true;
+      - script.execute: start_scanning
+    turn_off_action:
+      - lambda: |-
+          id(scanner_active) = false;
+      - script.execute: stop_scanning
+  - platform: ble_client
+    id: ble_client_switch
+    ble_client_id: akeron
+    name: "Connect to Akeron Device"
+
+# Text sensors for device info
+text_sensor:
+  - platform: template
+    name: "Akeron Connection Status"
+    id: akeron_connection_status
+    lambda: |-
+      if (id(akeron).connected()) {
+        return {"Connected"};
+      } else if (id(akeron_found)) {
+        return {"Found - Connecting..."};
+      } else if (id(scanner_active)) {
+        return {"Scanning..."};
+      } else {
+        return {"Idle"};
+      }
+    update_interval: 30s
+
+  - platform: template
+    name: "Akeron Alarm Text"
+    id: akeron_alarm_text
+
+  - platform: template
+    name: "Akeron Warning Text"
+    id: akeron_warning_text
+
+# Automation to start scanning on boot
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(scanner_active);'
+              - lambda: 'return !id(akeron).connected();'
+          then:
+            - lambda: 'ESP_LOGD("ble_scanner", "Periodic scan check - ensuring scanner is active");'
+            - script.execute: start_scanning
+
+  - interval: 30s
+    then:
+      - if:
+          condition:
+              - lambda: 'return id(akeron).connected();'
+          then:
+            - lambda: 'ESP_LOGD("data_request", "BLE Data Request");'
+
+            - ble_client.ble_write:
+                service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                value: [ 42, 82, 63, 77, 10, 42]
+
+            - delay: 5s
+
+            - ble_client.ble_write:
+                service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                value: [ 42, 82, 63, 83, 20, 42]
+
+            - delay: 5s
+
+            - ble_client.ble_write:
+                service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                value: [ 42, 82, 63, 65, 6, 42]
+
+binary_sensor:
+  - platform: template
+    name: "Akeron Flow Switch"
+    id: akeron_flow_switch
+
+  - platform: template
+    name: "Akeron PH Pump"
+    id: akeron_ph_pump
+
+  - platform: template
+    name: "Akeron ELX Pump"
+    id: akeron_elx_pump
+
+  - platform: template
+    name: "Akeron Forced Pump"
+    id: akeron_forced_pump
+
+  - platform: template
+    name: "Akeron Boost 2h"
+    id: akeron_boost
+
+  - platform: ble_presence
+    mac_address: ${mac_akeron} 
+    name: "Akeron Device Present"
+    id: akeron_present
+    on_press:
+      then:
+        - lambda: |-
+            ESP_LOGD("akeron_present", "Akeron device found! Attempting connection...");
+            id(akeron_found) = true;
+        - ble_client.connect: akeron
+    on_release:
+      then:
+        - lambda: |-
+            ESP_LOGD("akeron_present", "Akeron device no longer detected");
+            id(akeron_found) = false;
+
+sensor:
+  - platform: template
+    name: "Akeron PH"
+    id: akeron_ph
+    unit_of_measurement: "pH"
+    icon: "mdi:ph"
+    accuracy_decimals: 2
+    device_class: ph
+    state_class: measurement
+
+  - platform: template
+    name: "Akeron Water Temperature"
+    id: akeron_water_temp
+    unit_of_measurement: "°C"
+    icon: "mdi:thermometer"
+    device_class: "temperature"
+    state_class: "measurement"
+    accuracy_decimals: 2
+
+  - platform: template
+    name: "Akeron Salt"
+    id: akeron_salt
+    unit_of_measurement: "g"
+    icon: "mdi:alpha-s-box-outline"
+    device_class: "weight"
+    state_class: "measurement"
+    accuracy_decimals: 2
+
+  - platform: template
+    name: "Akeron Alarm"
+    id: akeron_alarm
+    icon: "mdi:alpha-a-box-outline"
+    device_class: ""
+    state_class: "measurement"
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Akeron Warning"
+    id: akeron_warning
+    icon: "mdi:alpha-w-box-outline"
+    device_class: ""
+    state_class: "measurement"
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Akeron PH Setpoint"
+    id: akeron_ph_setpoint
+    icon: "mdi:ph"
+    accuracy_decimals: 2
+    unit_of_measurement: "pH"
+    device_class: ph
+    state_class: measurement
+
+  - platform: template
+    name: "Akeron Elx Alarm"
+    id: akeron_elx_alarm
+    icon: "mdi:alpha-a-box-outline"
+    device_class: ""
+    state_class: "measurement"
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Akeron Elx"
+    id: akeron_elx
+    icon: "mdi:electron-framework"
+    unit_of_measurement: "%"
+    device_class: ""
+    state_class: "measurement"
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Akeron Boost Time"
+    id: akeron_boost_time
+    unit_of_measurement: "s"
+    device_class: ""
+    state_class: "measurement"
+    accuracy_decimals: 0
+
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: akeron
+    id: akeron_data
+
+#    state_class: measurement
+    name: "akeron_data"
+    service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+    characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+    notify: true
+    lambda: |-
+      std::string value2(x.begin(), x.end());
+      // std::string rawhex = format_hex_pretty((uint8_t *) value2.c_str(), value2.size()).c_str();
+      // ESP_LOGD("raw_hex", "%s", rawhex.c_str());
+      
+      if (x.size() == 16) {
+        // Trame M
+        if (x[0] == 77 ) {
+          ESP_LOGD("akeron_data", "Akeron Frame M");
+          float ph = ( ( x[1] * 256 ) +  x[2] ) / 100.0;
+          if ( (ph <= 9.5 ) && ( ph >= 3.5) ) {
+            id(akeron_ph).publish_state(ph);
+          }
+
+          float water_temp = ( ( x[5] * 256 ) +  x[6] ) / 10.0;
+          id(akeron_water_temp).publish_state(water_temp);
+
+          float salt = ( ( x[7] * 256 ) +  x[8] ) / 10.0;
+          if ( (salt <= 10 ) && ( salt >= 0) ) {
+            id(akeron_salt).publish_state(salt);
+          }
+
+          int alarm = x[9];
+          id(akeron_alarm).publish_state(alarm);
+
+          char alarm_text[256];
+          switch (alarm){
+            case 0:
+              id(akeron_alarm_text).publish_state("No Error");
+            break;
+            case 10:
+              id(akeron_alarm_text).publish_state("E.10 Error Reading PH");
+            break;
+            case 11:
+              id(akeron_alarm_text).publish_state("E.11 PH Stable");
+            break;
+            case 13:
+              id(akeron_alarm_text).publish_state("E.13 PH Low");
+            break;
+            case 14:
+              id(akeron_alarm_text).publish_state("E.14 PH High");
+            break;
+            case 15:
+              id(akeron_alarm_text).publish_state("E.15 PH Inverted Correction");
+            break;
+            case 18:
+              id(akeron_alarm_text).publish_state("E.18 Temperature too Low");
+            break;
+            case 19:
+              id(akeron_alarm_text).publish_state("E.19 Salt is too Low");
+            break;
+            case 20:
+              id(akeron_alarm_text).publish_state("E.20 Redox too High");
+            break;
+            case 21:
+              id(akeron_alarm_text).publish_state("E.21 Redox Low");
+            break;
+            case 22:
+              id(akeron_alarm_text).publish_state("E.22 Redox really Low");
+            break;
+            default:
+              sprintf(alarm_text,"Unknown Alarm: %d", akeron_alarm);
+              id(akeron_alarm_text).publish_state(alarm_text);
+            break;
+          }
+
+          int warning = x[10] & 0xF;
+          id(akeron_warning).publish_state(warning);
+
+          char warning_text[256];
+
+          switch(warning) {
+            case 0:
+              id(akeron_warning_text).publish_state("No Warning");
+            break; 
+            case 4:
+              id(akeron_warning_text).publish_state("E.4 Alert 2. Salt or Water Temperature Default");
+            break; 
+            default:
+              sprintf(warning_text,"Unknown Warning %d", warning);
+              id(akeron_warning_text).publish_state(warning_text);
+              break;
+          }
+          char ph_pump = x[11] & 0x20;
+          if (ph_pump) {
+            id(akeron_ph_pump).publish_state(true);
+          }
+          else {
+            id(akeron_ph_pump).publish_state(false);
+          }
+          char elx_pump = x[11] & 0x10;
+          if (elx_pump) {
+            id(akeron_elx_pump).publish_state(true);
+          }
+          else {
+            id(akeron_elx_pump).publish_state(false);
+          }
+          char pump_forced = x[12] & 0x40;
+          if (pump_forced) {
+            id(akeron_forced_pump).publish_state(true);
+          }
+          else {
+            id(akeron_forced_pump).publish_state(false);
+          }
+        }
+        // Trame S
+        else if (x[0] == 83) {
+          ESP_LOGD("akeron_data", "Akeron Frame S");
+
+          float ph_setpoint = ( ( x[1] * 256 ) +  x[2] ) / 100.0;
+          if (ph_setpoint > 3 && ph_setpoint < 11) {
+            id(akeron_ph_setpoint).publish_state(ph_setpoint);
+          }
+          else {
+            id(akeron_ph_setpoint).publish_state(NAN);
+          }
+        }
+        // Trame A
+        else if (x[0] == 65) {
+          ESP_LOGD("akeron_data", "Akeron Frame A");
+
+          char flow_switch = x[9] & 0x04;
+          if (flow_switch) {
+            id(akeron_flow_switch).publish_state(true);
+          }
+          else {
+            id(akeron_flow_switch).publish_state(false);
+          }
+
+          char alarm_elx = x[11] & 0xF;
+          id(akeron_elx_alarm).publish_state(alarm_elx);
+
+          id(akeron_elx).publish_state(x[1]);
+
+          // need to check registers 
+          float boost_time = ( ( x[2] * 256 ) +  x[3] );
+          id(akeron_boost_time).publish_state(boost_time);
+          if (boost_time > 0) {
+            id(akeron_boost).publish_state(true);
+          }
+          else {
+            id(akeron_boost).publish_state(false);
+          }
+        }
+      }
+      return 0;
+
+
+# Logger must be at least debug (default)
+logger:
+  level: debug
