@@ -55,6 +55,14 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  - id: akeron_raw_a10
+    type: uint8_t
+    restore_value: false
+    initial_value: '0'
+  - id: raw_m13
+    type: uint8_t
+    restore_value: false
+    initial_value: '0'
 
 # Scripts for controlling scanning
 script:
@@ -89,19 +97,22 @@ esp32_ble_tracker:
             ESP_LOGD("ble_adv", "  name: %s", x.get_name().c_str());
             ESP_LOGD("ble_adv", "  Advertised service UUIDs:");
             for (auto uuid : x.get_service_uuids()) {
-                ESP_LOGD("ble_adv", "    - %s", uuid.to_string().c_str());
+              char uuid_str[37];
+              ESP_LOGD("ble_adv", "    - %s", uuid.to_str(uuid_str));
             }
-            ESP_LOGD("ble_adv", "  Advertised service data:");
+            ESP_LOGD("ble_adv", "  Advertised service ");
             for (auto data : x.get_service_datas()) {
-                ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_string().c_str(), data.data.size());
+              char uuid_str2[37];
+              ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_str(uuid_str2), data.data.size());
             }
-            ESP_LOGD("ble_adv", "  Advertised manufacturer data:");
+            ESP_LOGD("ble_adv", "  Advertised manufacturer ");
             for (auto data : x.get_manufacturer_datas()) {
-                ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_string().c_str(), data.data.size());
+              char uuid_str3[37];
+              ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_str(uuid_str3), data.data.size());
             }
 
 ble_client:
-  - mac_address: ${mac_akeron}   
+  - mac_address: ${mac_akeron}
     id: akeron
     on_connect:
       then:
@@ -120,7 +131,7 @@ ble_client:
 
             // Resume scanning when disconnected
             id(scanner_active) = true;
-            id(akeron_found) =  false;
+            id(akeron_found) = false;
             id(akeron_ph).publish_state(NAN);
             id(akeron_water_temp).publish_state(NAN);
             id(akeron_salt).publish_state(NAN);
@@ -132,11 +143,22 @@ ble_client:
             id(akeron_elx_alarm).publish_state(NAN);
             id(akeron_boost).publish_state(false);
             id(akeron_elx_pump).publish_state(false);
-            id(akeron_flow_switch).publish_state(false);
+            id(akeron_flow_switch_active).publish_state(false);
             id(akeron_forced_pump).publish_state(false);
             id(akeron_ph_pump).publish_state(false);
+            id(akeron_ph_minus_pump).publish_state(false);
+            id(akeron_cfg_flow_switch).publish_state(false);
+            id(akeron_cfg_capteur_temp).publish_state(false);
+            id(akeron_cfg_capteur_sel).publish_state(false);
             id(akeron_warning_text).publish_state("");
             id(akeron_alarm_text).publish_state("");
+            id(akeron_alarm_elx_text).publish_state("");
+            id(akeron_alarm_rdx).publish_state(NAN);
+            id(akeron_ph_threshold_max).publish_state(NAN);
+            id(akeron_ph_threshold_min).publish_state(NAN);
+            id(akeron_cover_active).publish_state(false);
+            id(akeron_cover_force).publish_state(false);
+            id(akeron_cover_production).publish_state(NAN);
 
         - script.execute: start_scanning
 
@@ -158,12 +180,199 @@ switch:
     id: ble_client_switch
     ble_client_id: akeron
     name: "Connect to Akeron Device"
+  - platform: restart
+    name: "hackeron restart"
+
+  # Config Hardware FlowSwitch
+  - platform: template
+    name: "Akeron Config Flow Switch"
+    id: akeron_cfg_flow_switch
+    entity_category: config
+    icon: "mdi:water-sync"
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Flow Switch ON");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t m13 = id(raw_m13) | 0x10;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+    turn_off_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Flow Switch OFF");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t m13 = id(raw_m13) & ~0x10;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  # Config Hardware Capteur Température
+  - platform: template
+    name: "Akeron Config Capteur Temp"
+    id: akeron_cfg_capteur_temp
+    entity_category: config
+    icon: "mdi:thermometer-check"
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Capteur Temp ON");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t m13 = id(raw_m13) | 0x04;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+    turn_off_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Capteur Temp OFF");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t m13 = id(raw_m13) & ~0x04;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  # Config Hardware Capteur Sel 
+  - platform: template
+    name: "Akeron Config Capteur Sel"
+    id: akeron_cfg_capteur_sel
+    entity_category: config
+    icon: "mdi:shaker-outline"
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Capteur Sel ON");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t m13 = id(raw_m13) | 0x08;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+    turn_off_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Capteur Sel OFF");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t m13 = id(raw_m13) & ~0x08;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  - platform: template
+    name: "Akeron Cover Force"
+    id: akeron_cover_force
+    icon: "mdi:pool"
+    optimistic: false
+    turn_on_action:
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: !lambda |-
+            uint8_t raw = id(akeron_raw_a10);
+            raw = raw | (uint8_t)(1 << 3);
+            std::vector<unsigned char> result {
+              42, 65, 255, 255, 255, 255, 255, 255, 255, 255,
+              raw, 255, 255, 255, 255, 255, 42
+            };
+            uint8_t crc = 0;
+            for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+            result[result.size()-2] = crc;
+            return result;
+      - delay: 3s
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: [ 42, 82, 63, 65, 6, 42]
+    turn_off_action:
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: !lambda |-
+            uint8_t raw = id(akeron_raw_a10);
+            raw = raw & ~(uint8_t)(1 << 3);
+            std::vector<unsigned char> result {
+              42, 65, 255, 255, 255, 255, 255, 255, 255, 255,
+              raw, 255, 255, 255, 255, 255, 42
+            };
+            uint8_t crc = 0;
+            for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+            result[result.size()-2] = crc;
+            return result;
+      - delay: 3s
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: [ 42, 82, 63, 65, 6, 42]
 
 # Text sensors for device info
 text_sensor:
   - platform: template
     name: "Akeron Connection Status"
     id: akeron_connection_status
+    entity_category: diagnostic
     lambda: |-
       if (id(akeron).connected()) {
         return {"Connected"};
@@ -179,10 +388,23 @@ text_sensor:
   - platform: template
     name: "Akeron Alarm Text"
     id: akeron_alarm_text
+    entity_category: diagnostic
 
   - platform: template
     name: "Akeron Warning Text"
     id: akeron_warning_text
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Akeron Alarm Elx Text"
+    id: akeron_alarm_elx_text
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Akeron Model"
+    id: akeron_model
+    entity_category: diagnostic
+    icon: "mdi:pool"
 
 # Automation to start scanning on boot
 interval:
@@ -240,14 +462,245 @@ interval:
                   //end CRC
                   return result;
 
+# Boutons d'activation/arrêt du boost électrolyseur
+button:
+  - platform: template
+    name: "Akeron Boost Start 2h"
+    id: akeron_boost_start
+    icon: "mdi:lightning-bolt"
+    on_press:
+      then:
+        - lambda: 'ESP_LOGI("boost", "Sending Boost activation (2h = 120 min)");'
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint16_t boost_minutes = 120; // 2h en minutes
+              uint8_t msb = (boost_minutes >> 8) & 0xFF;
+              uint8_t lsb = boost_minutes & 0xFF;
+              // Trame A: [0x2A, 'A', 0xFF, boost_MSB, boost_LSB, 0xFF..., CRC, 0x2A] = 17 octets
+              std::vector<unsigned char> result { 42, 65, 255, msb, lsb, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 65, 6, 42]
+
+  - platform: template
+    name: "Akeron Force pH-"
+    id: akeron_force_phm
+    icon: "mdi:arrow-down-circle"
+    entity_category: config
+    on_press:
+      then:
+        - lambda: |-
+            ESP_LOGI("force_phm", "Forcing pH- pump");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              // Trame D vide : 0xFF sur octets 2..15, trame[10] = bits moteurs forcés
+              // bit2 = phm, bit3 = php, bit1 = chl, bit0 = fil
+              // On force uniquement phm (bit2), les autres à 0
+              std::vector<unsigned char> result {
+                42, 68, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0x04, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 42
+              };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 68, 6, 42]
+
+  - platform: template
+    name: "Send Calibrate Temp"
+    id: temp_calibrate_send
+    icon: "mdi:thermometer-check"
+    entity_category: config
+    on_press:
+      then:
+        - lambda: |-
+            ESP_LOGI("temp_cal", "Sending Temp calibration: %.1f C", id(temp_calibrate_value).state);
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint16_t mot = (uint16_t)(id(temp_calibrate_value).state * 10.0);
+              uint8_t msb = (mot >> 8) & 0xFF;
+              uint8_t lsb = mot & 0xFF;
+              // Trame M, octet[6]=MSB, octet[7]=LSB temperature
+              std::vector<unsigned char> result {
+                42, 77, 255, 255, 255, 255, msb, lsb,
+                255, 255, 255, 255, 255, 255, 255, 255, 42
+              };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  - platform: template
+    name: "Send Calibrate Salt"
+    id: salt_calibrate_send
+    icon: "mdi:send"
+    entity_category: config
+    on_press:
+      then:
+        - lambda: |-
+            ESP_LOGI("salt_cal", "Sending Salt calibration: %.1f g/L", id(salt_calibrate_value).state);
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint16_t mot = (uint16_t)(id(salt_calibrate_value).state * 10.0);
+              uint8_t msb = (mot >> 8) & 0xFF;
+              uint8_t lsb = mot & 0xFF;
+              std::vector<unsigned char> result {
+                42, 77, 255, 255, 255, 255, 255, 255, msb, lsb,
+                255, 255, 255, 255, 255, 255, 42
+              };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  - platform: template
+    name: "Send Calibrate PH"
+    id: ph_calibrate_send
+    icon: "mdi:send"
+    entity_category: config
+    on_press:
+      then:
+        - lambda: |-
+            ESP_LOGI("ph_cal", "Sending PH calibration: %.2f", id(ph_calibrate_value).state);
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint16_t mot = (uint16_t)(id(ph_calibrate_value).state * 100.0);
+              uint8_t msb = (mot >> 8) & 0xFF;
+              uint8_t lsb = mot & 0xFF;
+              std::vector<unsigned char> result {
+                42, 77, msb, lsb, 255, 255, 255, 255, 255, 255,
+                255, 255, 255, 255, 255, 255, 42
+              };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  - platform: template
+    name: "Send Calibrate Redox"
+    id: redox_calibrate_send
+    icon: "mdi:send"
+    entity_category: config
+    on_press:
+      then:
+        - lambda: |-
+            ESP_LOGI("rdx_cal", "Sending Redox calibration: %.0f mV", id(redox_calibrate_value).state);
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint16_t mot = (uint16_t)(id(redox_calibrate_value).state);
+              uint8_t msb = (mot >> 8) & 0xFF;
+              uint8_t lsb = mot & 0xFF;
+              std::vector<unsigned char> result {
+                42, 77, 255, 255, msb, lsb, 255, 255, 255, 255,
+                255, 255, 255, 255, 255, 255, 42
+              };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  - platform: template
+    name: "Akeron Boost Stop"
+    id: akeron_boost_stop
+    icon: "mdi:lightning-bolt-off"
+    on_press:
+      then:
+        - lambda: 'ESP_LOGI("boost", "Sending Boost STOP");'
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              std::vector<unsigned char> result { 42, 65, 255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 65, 6, 42]
+
+  - platform: template
+    name: "Akeron Reset Alarmes"
+    id: btn_reset_alarmes
+    icon: "mdi:alarm-off"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          ESP_LOGI("akeron send", "Sending Reset Alarmes");
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: !lambda |-
+            std::vector<unsigned char> result {
+              42, 77, 255, 255, 255, 255, 255, 255,
+              255, 255, 207, 255, 255, 255, 255, 255, 42
+            };
+            uint8_t crc = 0;
+            for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+            result[result.size()-2] = crc;
+            return result;
+      - delay: 3s
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: [ 42, 82, 63, 77, 10, 42]
+
 binary_sensor:
   - platform: template
-    name: "Akeron Flow Switch"
-    id: akeron_flow_switch
+    name: "Akeron Flow Switch Active"
+    id: akeron_flow_switch_active
 
   - platform: template
     name: "Akeron PH Pump"
     id: akeron_ph_pump
+
+  - platform: template
+    name: "Akeron PH Minus Pump"
+    id: akeron_ph_minus_pump
 
   - platform: template
     name: "Akeron ELX Pump"
@@ -258,11 +711,16 @@ binary_sensor:
     id: akeron_forced_pump
 
   - platform: template
+    name: "Akeron Cover Active"
+    id: akeron_cover_active
+    icon: "mdi:pool"
+
+  - platform: template
     name: "Akeron Boost 2h"
     id: akeron_boost
 
   - platform: ble_presence
-    mac_address: ${mac_akeron} 
+    mac_address: ${mac_akeron}
     name: "Akeron Device Present"
     id: akeron_present
     on_press:
@@ -320,6 +778,7 @@ sensor:
   - platform: template
     name: "Akeron Alarm"
     id: akeron_alarm
+    entity_category: diagnostic
     icon: "mdi:alpha-a-box-outline"
     device_class: ""
     state_class: "measurement"
@@ -328,6 +787,7 @@ sensor:
   - platform: template
     name: "Akeron Warning"
     id: akeron_warning
+    entity_category: diagnostic
     icon: "mdi:alpha-w-box-outline"
     device_class: ""
     state_class: "measurement"
@@ -341,7 +801,7 @@ sensor:
     unit_of_measurement: "pH"
     device_class: ph
     state_class: measurement
-  
+
   - platform: template
     name: "Akeron Redox Setpoint"
     id: akeron_redox_setpoint
@@ -354,6 +814,7 @@ sensor:
   - platform: template
     name: "Akeron Elx Alarm"
     id: akeron_elx_alarm
+    entity_category: diagnostic
     icon: "mdi:alpha-a-box-outline"
     device_class: ""
     state_class: "measurement"
@@ -371,10 +832,37 @@ sensor:
   - platform: template
     name: "Akeron Boost Time"
     id: akeron_boost_time
-    unit_of_measurement: "s"
+    unit_of_measurement: "min"
     device_class: ""
     state_class: "measurement"
     accuracy_decimals: 0
+
+  - platform: template
+    name: "Akeron Alarm Rdx"
+    id: akeron_alarm_rdx
+    entity_category: diagnostic
+    icon: "mdi:alpha-r-box-outline"
+    device_class: ""
+    state_class: "measurement"
+    accuracy_decimals: 0
+
+  - platform: template
+    name: "Akeron PH Threshold Max"
+    id: akeron_ph_threshold_max
+    icon: "mdi:ph"
+    unit_of_measurement: "pH"
+    device_class: ph
+    state_class: measurement
+    accuracy_decimals: 2
+
+  - platform: template
+    name: "Akeron PH Threshold Min"
+    id: akeron_ph_threshold_min
+    icon: "mdi:ph"
+    unit_of_measurement: "pH"
+    device_class: ph
+    state_class: measurement
+    accuracy_decimals: 2
 
   - platform: ble_client
     type: characteristic
@@ -452,13 +940,16 @@ sensor:
               id(akeron_alarm_text).publish_state("E.22 Redox really Low");
             break;
             default:
-              sprintf(alarm_text,"Unknown Alarm: %d", akeron_alarm);
+              snprintf(alarm_text, sizeof(alarm_text), "Unknown Alarm: %d", alarm);
               id(akeron_alarm_text).publish_state(alarm_text);
             break;
           }
 
           int warning = x[10] & 0xF;
           id(akeron_warning).publish_state(warning);
+
+          int alarm_rdx = (x[10] >> 4) & 0x0F;
+          id(akeron_alarm_rdx).publish_state(alarm_rdx);
 
           char warning_text[256];
 
@@ -474,26 +965,54 @@ sensor:
               id(akeron_warning_text).publish_state(warning_text);
               break;
           }
-          char ph_pump = x[11] & 0x20;
+
+          bool ph_pump = x[11] & 0x80; //
           if (ph_pump) {
             id(akeron_ph_pump).publish_state(true);
-          }
-          else {
+          } else {
             id(akeron_ph_pump).publish_state(false);
           }
-          char elx_pump = x[11] & 0x10;
+
+          bool ph_minus_pump = x[11] & 0x40;
+          if (ph_minus_pump) {
+            id(akeron_ph_minus_pump).publish_state(true);
+          } else {
+            id(akeron_ph_minus_pump).publish_state(false);
+          }
+
+          bool elx_pump = x[11] & 0x20;
           if (elx_pump) {
             id(akeron_elx_pump).publish_state(true);
-          }
-          else {
+          } else {
             id(akeron_elx_pump).publish_state(false);
           }
-          char pump_forced = x[12] & 0x40;
+
+          bool pump_forced = x[12] & 0x80;
           if (pump_forced) {
             id(akeron_forced_pump).publish_state(true);
-          }
-          else {
+          } else {
             id(akeron_forced_pump).publish_state(false);
+          }
+          // Config HW depuis trame[13] = x[12]
+          id(raw_m13) = x[12];
+          id(akeron_cfg_flow_switch).publish_state(x[12] & 0x10);
+          id(akeron_cfg_capteur_temp).publish_state(x[12] & 0x04);
+          id(akeron_cfg_capteur_sel).publish_state(x[12] & 0x08);
+
+          // eRegulateur: nibble bas de x[11] (= trame[12] bits 0-3)
+          char model_str[32];
+          switch (x[11] & 0x0F) {
+            case 0: id(akeron_model).publish_state("Regul 4Rx"); break;
+            case 1: id(akeron_model).publish_state("Regul"); break;
+            case 2: id(akeron_model).publish_state("Regul 3"); break;
+            case 3: id(akeron_model).publish_state("Duo"); break;
+            case 4: id(akeron_model).publish_state("Duo Regul 3"); break;
+            case 5: id(akeron_model).publish_state("Duo Regul 4Rx"); break;
+            case 6: id(akeron_model).publish_state("Akeron"); break;
+            case 7: id(akeron_model).publish_state("Duo Regul 4Amp"); break;
+            default:
+              snprintf(model_str, sizeof(model_str), "Unknown (%d)", x[11] & 0x0F);
+              id(akeron_model).publish_state(model_str);
           }
         }
         // Trame S
@@ -512,6 +1031,18 @@ sensor:
           }
           else {
             id(akeron_ph_setpoint).publish_state(NAN);
+          }
+
+          // seuil erreur pH Max - trame[10..11] -> x[9..10]
+          float ph_threshold_max = ((x[9] * 256) + x[10]) / 100.0f;
+          if (ph_threshold_max >= 5.5f && ph_threshold_max <= 9.5f) {
+            id(akeron_ph_threshold_max).publish_state(ph_threshold_max);
+          }
+
+          // seuil erreur pH Min - trame[12..13] -> x[11..12]
+          float ph_threshold_min = ((x[11] * 256) + x[12]) / 100.0f;
+          if (ph_threshold_min >= 5.5f && ph_threshold_min <= 9.5f) {
+            id(akeron_ph_threshold_min).publish_state(ph_threshold_min);
           }
         }
         //Trame E 69
@@ -533,24 +1064,47 @@ sensor:
 
           char flow_switch = x[9] & 0x04;
           if (flow_switch) {
-            id(akeron_flow_switch).publish_state(true);
+          id(akeron_flow_switch_active).publish_state(true);
           }
           else {
-            id(akeron_flow_switch).publish_state(false);
+          id(akeron_flow_switch_active).publish_state(false);
           }
 
           char alarm_elx = x[11] & 0xF;
           id(akeron_elx_alarm).publish_state(alarm_elx);
 
+          char alarm_elx_text[256];
+          switch(alarm_elx) {
+            case 0:
+              id(akeron_alarm_elx_text).publish_state("No Alarm");
+            break;
+            case 1:
+              id(akeron_alarm_elx_text).publish_state("Alarm 1: Defaut Electrode en court-circuit ou entartée");
+            break;
+            case 2:
+              id(akeron_alarm_elx_text).publish_state("Alarm 2: Defaut Salinite ou de temperature eau");
+            break;
+            case 3:
+              id(akeron_alarm_elx_text).publish_state("Alarm 3: Defaut Electrode usée ou mal connectée");
+            break;
+            case 4:
+              id(akeron_alarm_elx_text).publish_state("Alarm 4: Defaut Electrique court-circuit de l'appareil");
+            break;
+            default:
+              sprintf(alarm_elx_text,"Unknown Alarm Elx %d", alarm_elx);
+              id(akeron_alarm_elx_text).publish_state(alarm_elx_text);
+            break;
+          }
+
           id(akeron_elx).publish_state(x[1]);
-          
+
           if ( id(akeron_elx_setpoint_number).state != x[1]){
             auto call = id(akeron_elx_setpoint_number).make_call();
             call.set_value(x[1]);
             call.perform();
           }
 
-          // need to check registers 
+          // A CONFIRMER !!!
           float boost_time = ( ( x[2] * 256 ) +  x[3] );
           id(akeron_boost_time).publish_state(boost_time);
           if (boost_time > 0) {
@@ -558,6 +1112,22 @@ sensor:
           }
           else {
             id(akeron_boost).publish_state(false);
+          }
+
+          // Volet
+          id(akeron_raw_a10) = x[9];
+          id(akeron_cover_production).publish_state((float)x[8]);
+          id(akeron_cover_active).publish_state((bool)((x[9] >> 4) & 1));
+          id(akeron_cover_force).publish_state((bool)((x[9] >> 3) & 1));
+
+          // Salinité : trame[10] bits 1:0 -> x[9] bits 1:0
+          uint8_t sal = x[9] & 0x03;
+          if (sal <= 2) {
+            if (id(akeron_salinite_select).active_index().value_or(99) != (size_t)sal) {
+              auto call = id(akeron_salinite_select).make_call();
+              call.set_index(sal);
+              call.perform();
+            }
           }
         }
       }
@@ -649,6 +1219,69 @@ number:
             value: [ 42, 82, 63, 65, 6, 42]
 
   - platform: template
+    name: "Value Calibrate Salt"
+    id: salt_calibrate_value
+    min_value: 3.0
+    max_value: 20.0
+    step: 0.1
+    unit_of_measurement: "g/L"
+    mode: box
+    optimistic: true
+    icon: "mdi:tune"
+    entity_category: config
+    set_action:
+      - lambda: |-
+          id(salt_calibrate_value).publish_state(x);
+
+  - platform: template
+    name: "Value Calibrate PH"
+    id: ph_calibrate_value
+    min_value: 3.0
+    max_value: 9.5
+    step: 0.01
+    unit_of_measurement: "pH"
+    mode: box
+    optimistic: true
+    icon: "mdi:ph"
+    entity_category: config
+    initial_value: 7.0
+    set_action:
+      - lambda: |-
+          id(ph_calibrate_value).publish_state(x);
+
+  - platform: template
+    name: "Value Calibrate Redox"
+    id: redox_calibrate_value
+    min_value: 0
+    max_value: 1000
+    step: 1
+    unit_of_measurement: "mV"
+    mode: box
+    optimistic: true
+    icon: "mdi:alpha-r-box-outline"
+    entity_category: config
+    initial_value: 450
+    set_action:
+      - lambda: |-
+          id(redox_calibrate_value).publish_state(x);
+
+  - platform: template
+    name: "Value Calibrate Temp"
+    id: temp_calibrate_value
+    min_value: 0.0
+    max_value: 50.0
+    step: 0.1
+    unit_of_measurement: "°C"
+    mode: box
+    optimistic: true
+    icon: "mdi:thermometer"
+    entity_category: config
+    initial_value: 20.0
+    set_action:
+      - lambda: |-
+          id(temp_calibrate_value).publish_state(x);
+
+  - platform: template
     name: 'Akeron Redox Set'
     id: akeron_redox_setpoint_number
     max_value: 1100
@@ -699,9 +1332,70 @@ number:
               //end CRC
               return result;
 
-                        
-                
+  - platform: template
+    name: "Akeron Cover Production"
+    id: akeron_cover_production
+    entity_category: config
+    min_value: 5
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    mode: slider
+    icon: "mdi:pool"
+    optimistic: false
+    set_action:
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: !lambda |-
+            uint8_t val = (uint8_t)(x);
+            std::vector<unsigned char> result {
+              42, 65, 255, 255, 255, 255, 255, 255, 255, val,
+              255, 255, 255, 255, 255, 255, 42
+            };
+            uint8_t crc = 0;
+            for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+            result[result.size()-2] = crc;
+            return result;
+      - delay: 3s
+      - ble_client.ble_write:
+          service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+          characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+          value: [ 42, 82, 63, 65, 6, 42]
+
+select:
+  - platform: template
+    name: "Akeron Salinité"
+    id: akeron_salinite_select
+    entity_category: config
+    icon: "mdi:water-percent"
+    options:
+      - "Sel 4-8 g/l"
+      - "Sel 8-15 g/l"
+      - "Sel >15 g/l"
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Salinite index %d", (int)id(akeron_salinite_select).active_index().value_or(0));
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t idx = (uint8_t)id(akeron_salinite_select).active_index().value_or(0);
+              uint8_t a10 = (id(akeron_raw_a10) & 0xFC) | (idx & 0x03);
+              std::vector<unsigned char> result { 42, 65, 255, 255, 255, 255, 255, 255, 255, 255, a10, 255, 255, 255, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 65, 6, 42]
 
 # Logger must be at least debug (default)
 logger:
   level: debug
+
