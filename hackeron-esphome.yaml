@@ -26,11 +26,11 @@ esp32:
 #Enable Home Assistant API
 api:
   encryption:
-    key: "zTxYwJqDfxLkh7Uo6ZF/9k55EZfdl6zIaEeWB9by3hU="
+    key: !secret api_encryption_key
 
 ota:
   - platform: esphome
-    password: "c336d525339f21a3c1d48f6a05402878"
+    password: !secret ota_password
 
 wifi:
   ssid: !secret wifi_ssid
@@ -64,22 +64,60 @@ globals:
     restore_value: false
     initial_value: '0'
 
-# Scripts for controlling scanning
+# ─────────────────────────────────────────
+# SCRIPTS
+# ─────────────────────────────────────────
 script:
+  # Démarre le scan BLE si scanner_active est vrai
   - id: start_scanning
     then:
       - if:
           condition:
             lambda: 'return id(scanner_active);'
           then:
-            - logger.log: "Starting BLE scan..."
+            - logger.log: "Démarrage du scan BLE..."
             - esp32_ble_tracker.start_scan:
                 continuous: true
-  
+
+  # Arrête le scan BLE
   - id: stop_scanning
     then:
-      - logger.log: "Stopping BLE scan..."
+      - logger.log: "Arrêt du scan BLE..."
       - esp32_ble_tracker.stop_scan:
+
+  # Remet toutes les entités à leur état déconnecté
+  - id: reset_entities_state
+    then:
+      - lambda: |-
+          id(akeron_ph).publish_state(NAN);
+          id(akeron_water_temp).publish_state(NAN);
+          id(akeron_salt).publish_state(NAN);
+          id(akeron_alarm).publish_state(NAN);
+          id(akeron_warning).publish_state(NAN);
+          id(akeron_elx).publish_state(NAN);
+          id(akeron_ph_setpoint).publish_state(NAN);
+          id(akeron_boost_time).publish_state(NAN);
+          id(akeron_elx_alarm).publish_state(NAN);
+          id(akeron_alarm_rdx).publish_state(NAN);
+          id(akeron_ph_threshold_max).publish_state(NAN);
+          id(akeron_ph_threshold_min).publish_state(NAN);
+          id(akeron_cover_production).publish_state(NAN);
+          id(akeron_boost).publish_state(false);
+          id(akeron_elx_pump).publish_state(false);
+          id(akeron_flow_switch_active).publish_state(false);
+          id(akeron_forced_pump).publish_state(false);
+          id(akeron_ph_pump).publish_state(false);
+          id(akeron_ph_minus_pump).publish_state(false);
+          id(akeron_cfg_flow_switch).publish_state(false);
+          id(akeron_cfg_capteur_temp).publish_state(false);
+          id(akeron_cfg_capteur_sel).publish_state(false);
+          id(akeron_cfg_ph_plus).publish_state(false);
+          id(akeron_cfg_ph_minus).publish_state(false);
+          id(akeron_cover_active).publish_state(false);
+          id(akeron_cover_force).publish_state(false);
+          id(akeron_warning_text).publish_state("");
+          id(akeron_alarm_text).publish_state("");
+          id(akeron_alarm_elx_text).publish_state("");
 
 
 esp32_ble_tracker:
@@ -89,27 +127,12 @@ esp32_ble_tracker:
     window: 449ms
     active: false
 
-  on_ble_advertise:
-      then:
-        - lambda: |-
-            ESP_LOGD("ble_adv", "New BLE device");
-            ESP_LOGD("ble_adv", "  address: %s", x.address_str().c_str());
-            ESP_LOGD("ble_adv", "  name: %s", x.get_name().c_str());
-            ESP_LOGD("ble_adv", "  Advertised service UUIDs:");
-            for (auto uuid : x.get_service_uuids()) {
-              char uuid_str[37];
-              ESP_LOGD("ble_adv", "    - %s", uuid.to_str(uuid_str));
-            }
-            ESP_LOGD("ble_adv", "  Advertised service ");
-            for (auto data : x.get_service_datas()) {
-              char uuid_str2[37];
-              ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_str(uuid_str2), data.data.size());
-            }
-            ESP_LOGD("ble_adv", "  Advertised manufacturer ");
-            for (auto data : x.get_manufacturer_datas()) {
-              char uuid_str3[37];
-              ESP_LOGD("ble_adv", "    - %s: (length %i)", data.uuid.to_str(uuid_str3), data.data.size());
-            }
+  # Décommenter pour déboguer la découverte BLE
+  # on_ble_advertise:
+  #     then:
+  #       - lambda: |-
+  #           ESP_LOGD("ble_adv", "Appareil BLE: %s (%s)",
+  #             x.get_name().c_str(), x.address_str().c_str());
 
 ble_client:
   - mac_address: ${mac_akeron}
@@ -118,52 +141,23 @@ ble_client:
       then:
         - lambda: |-
             ESP_LOGD("ble_client", "Connected to AKERON!");
-
-        - lambda: |-
-            // Stop scanning when connected
             id(scanner_active) = false;
         - script.execute: stop_scanning
 
     on_disconnect:
       then:
         - lambda: |-
-            ESP_LOGD("ble_client", "Disconnected from AKERON");
-
-            // Resume scanning when disconnected
+            ESP_LOGD("ble_client", "Déconnecté de AKERON - reprise du scan");
             id(scanner_active) = true;
             id(akeron_found) = false;
-            id(akeron_ph).publish_state(NAN);
-            id(akeron_water_temp).publish_state(NAN);
-            id(akeron_salt).publish_state(NAN);
-            id(akeron_alarm).publish_state(NAN);
-            id(akeron_warning).publish_state(NAN);
-            id(akeron_elx).publish_state(NAN);
-            id(akeron_ph_setpoint).publish_state(NAN);
-            id(akeron_boost_time).publish_state(NAN);
-            id(akeron_elx_alarm).publish_state(NAN);
-            id(akeron_boost).publish_state(false);
-            id(akeron_elx_pump).publish_state(false);
-            id(akeron_flow_switch_active).publish_state(false);
-            id(akeron_forced_pump).publish_state(false);
-            id(akeron_ph_pump).publish_state(false);
-            id(akeron_ph_minus_pump).publish_state(false);
-            id(akeron_cfg_flow_switch).publish_state(false);
-            id(akeron_cfg_capteur_temp).publish_state(false);
-            id(akeron_cfg_capteur_sel).publish_state(false);
-            id(akeron_cfg_ph_plus).publish_state(false);
-            id(akeron_cfg_ph_minus).publish_state(false);
-            id(akeron_warning_text).publish_state("");
-            id(akeron_alarm_text).publish_state("");
-            id(akeron_alarm_elx_text).publish_state("");
-            id(akeron_alarm_rdx).publish_state(NAN);
-            id(akeron_ph_threshold_max).publish_state(NAN);
-            id(akeron_ph_threshold_min).publish_state(NAN);
-            id(akeron_cover_active).publish_state(false);
-            id(akeron_cover_force).publish_state(false);
-            id(akeron_cover_production).publish_state(NAN);
-
+        - script.execute: reset_entities_state
         - script.execute: start_scanning
 
+# ─────────────────────────────────────────
+# SWITCHES
+# ─────────────────────────────────────────
+
+  # --- Diagnostic ---
 switch:
   - platform: template
     name: "BLE Scanner"
@@ -184,10 +178,12 @@ switch:
     ble_client_id: akeron
     name: "Connect to Akeron Device"
     entity_category: diagnostic
+  # --- Commande système ---
   - platform: restart
     name: "hackeron restart"
 
-  # Config Hardware FlowSwitch
+  # --- Configuration matérielle ---
+  # Config Flow Switch
   - platform: template
     name: "Config Flow Switch"
     id: akeron_cfg_flow_switch
@@ -233,7 +229,7 @@ switch:
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
             value: [ 42, 82, 63, 77, 10, 42]
 
-  # Config Hardware Capteur Température
+  # Config Capteur Température
   - platform: template
     name: "Config Capteur Temp"
     id: akeron_cfg_capteur_temp
@@ -279,7 +275,7 @@ switch:
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
             value: [ 42, 82, 63, 77, 10, 42]
 
-  # Config Hardware Pompe PH+
+  # Config Pompe PH+
   - platform: template
     name: "Config Pompe PH+"
     id: akeron_cfg_ph_plus
@@ -327,7 +323,7 @@ switch:
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
             value: [ 42, 82, 63, 77, 10, 42]
 
-  # Config Hardware Pompe PH-
+  # Config Pompe PH-
   - platform: template
     name: "Config Pompe PH-"
     id: akeron_cfg_ph_minus
@@ -375,7 +371,7 @@ switch:
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
             value: [ 42, 82, 63, 77, 10, 42]
 
-  # Config Hardware Capteur Sel 
+  # Config Capteur Sel
   - platform: template
     name: "Config Capteur Sel"
     id: akeron_cfg_capteur_sel
@@ -968,9 +964,8 @@ sensor:
     type: characteristic
     ble_client_id: akeron
     id: akeron_data
-
-#    state_class: measurement
     name: "akeron_data"
+    # state_class: measurement  (désactivé - trame brute hexadécimale)
     entity_category: diagnostic
     service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
     characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
