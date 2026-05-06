@@ -168,6 +168,7 @@ switch:
   - platform: template
     name: "BLE Scanner"
     id: ble_scanner_switch
+    entity_category: diagnostic
     lambda: |-
       return id(scanner_active);
     turn_on_action:
@@ -182,6 +183,7 @@ switch:
     id: ble_client_switch
     ble_client_id: akeron
     name: "Connect to Akeron Device"
+    entity_category: diagnostic
   - platform: restart
     name: "hackeron restart"
 
@@ -969,6 +971,7 @@ sensor:
 
 #    state_class: measurement
     name: "akeron_data"
+    entity_category: diagnostic
     service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
     characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
     notify: true
