@@ -1,6 +1,6 @@
 esphome:
   name: hackeron-esp
-  friendly_name: hackeron-esp
+  friendly_name: ""
   min_version: 2025.5.0
   name_add_mac_suffix: false
 
@@ -150,6 +150,8 @@ ble_client:
             id(akeron_cfg_flow_switch).publish_state(false);
             id(akeron_cfg_capteur_temp).publish_state(false);
             id(akeron_cfg_capteur_sel).publish_state(false);
+            id(akeron_cfg_ph_plus).publish_state(false);
+            id(akeron_cfg_ph_minus).publish_state(false);
             id(akeron_warning_text).publish_state("");
             id(akeron_alarm_text).publish_state("");
             id(akeron_alarm_elx_text).publish_state("");
@@ -185,7 +187,7 @@ switch:
 
   # Config Hardware FlowSwitch
   - platform: template
-    name: "Akeron Config Flow Switch"
+    name: "Config Flow Switch"
     id: akeron_cfg_flow_switch
     entity_category: config
     icon: "mdi:water-sync"
@@ -231,7 +233,7 @@ switch:
 
   # Config Hardware Capteur Température
   - platform: template
-    name: "Akeron Config Capteur Temp"
+    name: "Config Capteur Temp"
     id: akeron_cfg_capteur_temp
     entity_category: config
     icon: "mdi:thermometer-check"
@@ -275,9 +277,105 @@ switch:
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
             value: [ 42, 82, 63, 77, 10, 42]
 
+  # Config Hardware Pompe PH+
+  - platform: template
+    name: "Config Pompe PH+"
+    id: akeron_cfg_ph_plus
+    entity_category: config
+    icon: "mdi:arrow-up-circle"
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Pompe PH+ ON");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t pompes = (id(raw_m13) | 0x02) & 0x03;
+              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+    turn_off_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Pompe PH+ OFF");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t pompes = (id(raw_m13) & ~0x02) & 0x03;
+              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
+  # Config Hardware Pompe PH-
+  - platform: template
+    name: "Config Pompe PH-"
+    id: akeron_cfg_ph_minus
+    entity_category: config
+    icon: "mdi:arrow-down-circle"
+    optimistic: true
+    turn_on_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Pompe PH- ON");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t pompes = (id(raw_m13) | 0x01) & 0x03;
+              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+    turn_off_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("akeron send", "Sending Config Pompe PH- OFF");
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: !lambda |-
+              uint8_t pompes = (id(raw_m13) & ~0x01) & 0x03;
+              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
+              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+              uint8_t crc = 0;
+              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+              result[result.size()-2] = crc;
+              return result;
+        - delay: 3s
+        - ble_client.ble_write:
+            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+            value: [ 42, 82, 63, 77, 10, 42]
+
   # Config Hardware Capteur Sel 
   - platform: template
-    name: "Akeron Config Capteur Sel"
+    name: "Config Capteur Sel"
     id: akeron_cfg_capteur_sel
     entity_category: config
     icon: "mdi:shaker-outline"
@@ -322,7 +420,7 @@ switch:
             value: [ 42, 82, 63, 77, 10, 42]
 
   - platform: template
-    name: "Akeron Cover Force"
+    name: "Cover Force"
     id: akeron_cover_force
     icon: "mdi:pool"
     optimistic: false
@@ -370,7 +468,7 @@ switch:
 # Text sensors for device info
 text_sensor:
   - platform: template
-    name: "Akeron Connection Status"
+    name: "Connection Status"
     id: akeron_connection_status
     entity_category: diagnostic
     lambda: |-
@@ -386,22 +484,22 @@ text_sensor:
     update_interval: 30s
 
   - platform: template
-    name: "Akeron Alarm Text"
+    name: "Alarm Text"
     id: akeron_alarm_text
     entity_category: diagnostic
 
   - platform: template
-    name: "Akeron Warning Text"
+    name: "Warning Text"
     id: akeron_warning_text
     entity_category: diagnostic
 
   - platform: template
-    name: "Akeron Alarm Elx Text"
+    name: "Alarm Elx Text"
     id: akeron_alarm_elx_text
     entity_category: diagnostic
 
   - platform: template
-    name: "Akeron Model"
+    name: "Model"
     id: akeron_model
     entity_category: diagnostic
     icon: "mdi:pool"
@@ -465,7 +563,7 @@ interval:
 # Boutons d'activation/arrêt du boost électrolyseur
 button:
   - platform: template
-    name: "Akeron Boost Start 2h"
+    name: "Boost Start 2h"
     id: akeron_boost_start
     icon: "mdi:lightning-bolt"
     on_press:
@@ -491,7 +589,7 @@ button:
             value: [ 42, 82, 63, 65, 6, 42]
 
   - platform: template
-    name: "Akeron Force pH-"
+    name: "Force pH-"
     id: akeron_force_phm
     icon: "mdi:arrow-down-circle"
     entity_category: config
@@ -642,7 +740,7 @@ button:
             value: [ 42, 82, 63, 77, 10, 42]
 
   - platform: template
-    name: "Akeron Boost Stop"
+    name: "Boost Stop"
     id: akeron_boost_stop
     icon: "mdi:lightning-bolt-off"
     on_press:
@@ -664,7 +762,7 @@ button:
             value: [ 42, 82, 63, 65, 6, 42]
 
   - platform: template
-    name: "Akeron Reset Alarmes"
+    name: "Reset Alarmes"
     id: btn_reset_alarmes
     icon: "mdi:alarm-off"
     entity_category: diagnostic
@@ -691,37 +789,37 @@ button:
 
 binary_sensor:
   - platform: template
-    name: "Akeron Flow Switch Active"
+    name: "Flow Switch Active"
     id: akeron_flow_switch_active
 
   - platform: template
-    name: "Akeron PH Pump"
+    name: "PH Pump"
     id: akeron_ph_pump
 
   - platform: template
-    name: "Akeron PH Minus Pump"
+    name: "PH Minus Pump"
     id: akeron_ph_minus_pump
 
   - platform: template
-    name: "Akeron ELX Pump"
+    name: "ELX Pump"
     id: akeron_elx_pump
 
   - platform: template
-    name: "Akeron Forced Pump"
+    name: "Forced Pump"
     id: akeron_forced_pump
 
   - platform: template
-    name: "Akeron Cover Active"
+    name: "Cover Active"
     id: akeron_cover_active
     icon: "mdi:pool"
 
   - platform: template
-    name: "Akeron Boost 2h"
+    name: "Boost 2h"
     id: akeron_boost
 
   - platform: ble_presence
     mac_address: ${mac_akeron}
-    name: "Akeron Device Present"
+    name: "Device Present"
     id: akeron_present
     on_press:
       then:
@@ -737,7 +835,7 @@ binary_sensor:
 
 sensor:
   - platform: template
-    name: "Akeron PH"
+    name: "PH"
     id: akeron_ph
     unit_of_measurement: "pH"
     icon: "mdi:ph"
@@ -747,7 +845,7 @@ sensor:
     state_class: ""
   
   - platform: template
-    name: "Akeron Redox"
+    name: "Redox"
     id: akeron_redox
     unit_of_measurement: "mV"
     icon: "mdi:alpha-r-box-outline"
@@ -756,7 +854,7 @@ sensor:
     state_class: ""
 
   - platform: template
-    name: "Akeron Water Temperature"
+    name: "Water Temperature"
     id: akeron_water_temp
     unit_of_measurement: "°C"
     icon: "mdi:thermometer"
@@ -766,7 +864,7 @@ sensor:
     accuracy_decimals: 2
 
   - platform: template
-    name: "Akeron Salt"
+    name: "Salt"
     id: akeron_salt
     unit_of_measurement: "g"
     icon: "mdi:alpha-s-box-outline"
@@ -776,7 +874,7 @@ sensor:
     accuracy_decimals: 2
 
   - platform: template
-    name: "Akeron Alarm"
+    name: "Alarm"
     id: akeron_alarm
     entity_category: diagnostic
     icon: "mdi:alpha-a-box-outline"
@@ -785,7 +883,7 @@ sensor:
     accuracy_decimals: 0
 
   - platform: template
-    name: "Akeron Warning"
+    name: "Warning"
     id: akeron_warning
     entity_category: diagnostic
     icon: "mdi:alpha-w-box-outline"
@@ -794,7 +892,7 @@ sensor:
     accuracy_decimals: 0
 
   - platform: template
-    name: "Akeron PH Setpoint"
+    name: "PH Setpoint"
     id: akeron_ph_setpoint
     icon: "mdi:ph"
     accuracy_decimals: 2
@@ -803,7 +901,7 @@ sensor:
     state_class: measurement
 
   - platform: template
-    name: "Akeron Redox Setpoint"
+    name: "Redox Setpoint"
     id: akeron_redox_setpoint
     unit_of_measurement: "mV"
     icon: "mdi:alpha-r-box-outline"
@@ -812,7 +910,7 @@ sensor:
     state_class: measurement
 
   - platform: template
-    name: "Akeron Elx Alarm"
+    name: "Elx Alarm"
     id: akeron_elx_alarm
     entity_category: diagnostic
     icon: "mdi:alpha-a-box-outline"
@@ -821,7 +919,7 @@ sensor:
     accuracy_decimals: 0
 
   - platform: template
-    name: "Akeron Elx"
+    name: "Elx"
     id: akeron_elx
     icon: "mdi:electron-framework"
     unit_of_measurement: "%"
@@ -830,7 +928,7 @@ sensor:
     accuracy_decimals: 0
 
   - platform: template
-    name: "Akeron Boost Time"
+    name: "Boost Time"
     id: akeron_boost_time
     unit_of_measurement: "min"
     device_class: ""
@@ -838,7 +936,7 @@ sensor:
     accuracy_decimals: 0
 
   - platform: template
-    name: "Akeron Alarm Rdx"
+    name: "Alarm Rdx"
     id: akeron_alarm_rdx
     entity_category: diagnostic
     icon: "mdi:alpha-r-box-outline"
@@ -847,7 +945,7 @@ sensor:
     accuracy_decimals: 0
 
   - platform: template
-    name: "Akeron PH Threshold Max"
+    name: "PH Threshold Max"
     id: akeron_ph_threshold_max
     icon: "mdi:ph"
     unit_of_measurement: "pH"
@@ -856,7 +954,7 @@ sensor:
     accuracy_decimals: 2
 
   - platform: template
-    name: "Akeron PH Threshold Min"
+    name: "PH Threshold Min"
     id: akeron_ph_threshold_min
     icon: "mdi:ph"
     unit_of_measurement: "pH"
@@ -998,6 +1096,8 @@ sensor:
           id(akeron_cfg_flow_switch).publish_state(x[12] & 0x10);
           id(akeron_cfg_capteur_temp).publish_state(x[12] & 0x04);
           id(akeron_cfg_capteur_sel).publish_state(x[12] & 0x08);
+          id(akeron_cfg_ph_plus).publish_state(x[12] & 0x02);   // bit 1 : pompe pH+
+          id(akeron_cfg_ph_minus).publish_state(x[12] & 0x01);  // bit 0 : pompe pH-
 
           // eRegulateur: nibble bas de x[11] (= trame[12] bits 0-3)
           char model_str[32];
@@ -1333,7 +1433,7 @@ number:
               return result;
 
   - platform: template
-    name: "Akeron Cover Production"
+    name: "Cover Production"
     id: akeron_cover_production
     entity_category: config
     min_value: 5
@@ -1365,7 +1465,7 @@ number:
 
 select:
   - platform: template
-    name: "Akeron Salinité"
+    name: "Salinité"
     id: akeron_salinite_select
     entity_category: config
     icon: "mdi:water-percent"
