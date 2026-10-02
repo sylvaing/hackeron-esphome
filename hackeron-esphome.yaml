@@ -63,6 +63,15 @@ globals:
     type: uint8_t
     restore_value: false
     initial_value: '0'
+  # [corr. 5] Contrôle du CRC des trames reçues (désactivable depuis HA sans reflasher)
+  - id: crc_check_enabled
+    type: bool
+    restore_value: true
+    initial_value: 'true'
+  - id: crc_errors
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
 
 # ─────────────────────────────────────────
 # SCRIPTS
@@ -161,6 +170,8 @@ ble_client:
 switch:
   - platform: template
     name: "BLE Scanner"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
     id: ble_scanner_switch
     entity_category: diagnostic
     lambda: |-
@@ -173,6 +184,19 @@ switch:
       - lambda: |-
           id(scanner_active) = false;
       - script.execute: stop_scanning
+  # [corr. 5] Si les données disparaissent après le flash, couper ce switch et regarder les logs
+  - platform: template
+    name: "Contrôle CRC trames"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
+    id: crc_check_switch
+    entity_category: config
+    icon: "mdi:check-decagram"
+    lambda: 'return id(crc_check_enabled);'
+    turn_on_action:
+      - lambda: 'id(crc_check_enabled) = true;'
+    turn_off_action:
+      - lambda: 'id(crc_check_enabled) = false;'
   - platform: ble_client
     id: ble_client_switch
     ble_client_id: akeron
@@ -186,6 +210,8 @@ switch:
   # Config Flow Switch
   - platform: template
     name: "Config Flow Switch"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
     id: akeron_cfg_flow_switch
     entity_category: config
     icon: "mdi:water-sync"
@@ -232,6 +258,8 @@ switch:
   # Config Capteur Température
   - platform: template
     name: "Config Capteur Temp"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
     id: akeron_cfg_capteur_temp
     entity_category: config
     icon: "mdi:thermometer-check"
@@ -276,12 +304,17 @@ switch:
             value: [ 42, 82, 63, 77, 10, 42]
 
   # Config Pompe PH+
+  # [corr. 4] Bits 0-1 de M13 : 01 = pH- seule, 10 = pH+ seule, 11 = les deux (l'appli Corelec
+  # n'envoie jamais 00). Couper PH+ alors que pH- est déjà absente est donc refusé.
+  # optimistic: false -> l'état affiché est celui relu dans la trame M (3 s après l'écriture).
   - platform: template
     name: "Config Pompe PH+"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
     id: akeron_cfg_ph_plus
     entity_category: config
     icon: "mdi:arrow-up-circle"
-    optimistic: true
+    optimistic: false
     turn_on_action:
       then:
         - lambda: |-
@@ -290,8 +323,7 @@ switch:
             service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
             value: !lambda |-
-              uint8_t pompes = (id(raw_m13) | 0x02) & 0x03;
-              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
+              uint8_t m13 = (id(raw_m13) & 0xFC) | ((id(raw_m13) | 0x02) & 0x03);
               std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
               uint8_t crc = 0;
               for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
@@ -304,32 +336,44 @@ switch:
             value: [ 42, 82, 63, 77, 10, 42]
     turn_off_action:
       then:
-        - lambda: |-
-            ESP_LOGI("akeron send", "Sending Config Pompe PH+ OFF");
-        - ble_client.ble_write:
-            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
-            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
-            value: !lambda |-
-              uint8_t pompes = (id(raw_m13) & ~0x02) & 0x03;
-              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
-              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
-              uint8_t crc = 0;
-              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
-              result[result.size()-2] = crc;
-              return result;
-        - delay: 3s
-        - ble_client.ble_write:
-            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
-            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
-            value: [ 42, 82, 63, 77, 10, 42]
+        - if:
+            condition:
+              lambda: 'return (id(raw_m13) & 0x01) != 0;'
+            then:
+              - lambda: |-
+                  ESP_LOGI("akeron send", "Sending Config Pompe PH+ OFF");
+              - ble_client.ble_write:
+                  service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                  characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                  value: !lambda |-
+                    uint8_t m13 = (id(raw_m13) & 0xFC) | ((id(raw_m13) & ~0x02) & 0x03);
+                    std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+                    uint8_t crc = 0;
+                    for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+                    result[result.size()-2] = crc;
+                    return result;
+              - delay: 3s
+              - ble_client.ble_write:
+                  service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                  characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                  value: [ 42, 82, 63, 77, 10, 42]
+            else:
+              - lambda: |-
+                  ESP_LOGW("akeron send", "Config Pompe PH+ OFF refusé : pH- absente, il faut au moins une pompe pH");
+                  id(akeron_cfg_ph_plus).publish_state(true);
 
   # Config Pompe PH-
+  # [corr. 4] Bits 0-1 de M13 : 01 = pH- seule, 10 = pH+ seule, 11 = les deux (l'appli Corelec
+  # n'envoie jamais 00). Couper PH- alors que pH+ est déjà absente est donc refusé.
+  # optimistic: false -> l'état affiché est celui relu dans la trame M (3 s après l'écriture).
   - platform: template
     name: "Config Pompe PH-"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
     id: akeron_cfg_ph_minus
     entity_category: config
     icon: "mdi:arrow-down-circle"
-    optimistic: true
+    optimistic: false
     turn_on_action:
       then:
         - lambda: |-
@@ -338,8 +382,7 @@ switch:
             service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
             value: !lambda |-
-              uint8_t pompes = (id(raw_m13) | 0x01) & 0x03;
-              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
+              uint8_t m13 = (id(raw_m13) & 0xFC) | ((id(raw_m13) | 0x01) & 0x03);
               std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
               uint8_t crc = 0;
               for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
@@ -352,28 +395,37 @@ switch:
             value: [ 42, 82, 63, 77, 10, 42]
     turn_off_action:
       then:
-        - lambda: |-
-            ESP_LOGI("akeron send", "Sending Config Pompe PH- OFF");
-        - ble_client.ble_write:
-            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
-            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
-            value: !lambda |-
-              uint8_t pompes = (id(raw_m13) & ~0x01) & 0x03;
-              uint8_t m13 = (id(raw_m13) & 0xFC) | pompes;
-              std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
-              uint8_t crc = 0;
-              for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
-              result[result.size()-2] = crc;
-              return result;
-        - delay: 3s
-        - ble_client.ble_write:
-            service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
-            characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
-            value: [ 42, 82, 63, 77, 10, 42]
+        - if:
+            condition:
+              lambda: 'return (id(raw_m13) & 0x02) != 0;'
+            then:
+              - lambda: |-
+                  ESP_LOGI("akeron send", "Sending Config Pompe PH- OFF");
+              - ble_client.ble_write:
+                  service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                  characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                  value: !lambda |-
+                    uint8_t m13 = (id(raw_m13) & 0xFC) | ((id(raw_m13) & ~0x01) & 0x03);
+                    std::vector<unsigned char> result { 42, 77, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, m13, 255, 255, 42 };
+                    uint8_t crc = 0;
+                    for (int c = 0; c < (int)result.size()-2; c++) crc ^= result[c];
+                    result[result.size()-2] = crc;
+                    return result;
+              - delay: 3s
+              - ble_client.ble_write:
+                  service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                  characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                  value: [ 42, 82, 63, 77, 10, 42]
+            else:
+              - lambda: |-
+                  ESP_LOGW("akeron send", "Config Pompe PH- OFF refusé : pH+ absente, il faut au moins une pompe pH");
+                  id(akeron_cfg_ph_minus).publish_state(true);
 
   # Config Capteur Sel
   - platform: template
     name: "Config Capteur Sel"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
     id: akeron_cfg_capteur_sel
     entity_category: config
     icon: "mdi:shaker-outline"
@@ -419,6 +471,8 @@ switch:
 
   - platform: template
     name: "Cover Force"
+    # [corr. 5b] DISABLED : sinon ESPHome exécute turn_off_action au démarrage (défaut ALWAYS_OFF)
+    restore_mode: DISABLED
     id: akeron_cover_force
     icon: "mdi:pool"
     optimistic: false
@@ -614,7 +668,8 @@ button:
         - ble_client.ble_write:
             service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
             characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
-            value: [ 42, 82, 63, 68, 6, 42]
+            # [corr. 3] CRC de la demande D = 0x2A^0x52^0x3F^0x44 = 3 (6 était celui de la trame A)
+            value: [ 42, 82, 63, 68, 3, 42]
 
   - platform: template
     name: "Send Calibrate Temp"
@@ -864,9 +919,9 @@ sensor:
   - platform: template
     name: "Salt"
     id: akeron_salt
-    unit_of_measurement: "g"
+    # [corr. 7] concentration en g/L (pas un poids)
+    unit_of_measurement: "g/L"
     icon: "mdi:alpha-s-box-outline"
-    device_class: "weight"
     #try to remove measurement to have real stat into HA
     state_class: ""
     accuracy_decimals: 2
@@ -942,6 +997,17 @@ sensor:
     state_class: "measurement"
     accuracy_decimals: 0
 
+  # [corr. 5] Trames rejetées pour CRC faux (depuis le démarrage de l'ESP)
+  - platform: template
+    name: "Erreurs CRC"
+    id: akeron_crc_errors
+    entity_category: diagnostic
+    icon: "mdi:alert-decagram-outline"
+    accuracy_decimals: 0
+    state_class: total_increasing
+    lambda: 'return (float) id(crc_errors);'
+    update_interval: 60s
+
   - platform: template
     name: "PH Threshold Max"
     id: akeron_ph_threshold_max
@@ -976,6 +1042,17 @@ sensor:
       // ESP_LOGD("raw_hex", "%s", rawhex.c_str());
       
       if (x.size() == 16) {
+        // [corr. 5] Notification = trame Corelec sans son '*' initial :
+        // x[0] = mnémonique, x[1..13] = données, x[14] = CRC, x[15] = '*'.
+        // CRC = XOR des octets 0..14 de la trame complète, '*' (0x2A) inclus.
+        uint8_t crc = 0x2A;
+        for (int c = 0; c < 14; c++) crc ^= x[c];
+        if (crc != x[14] || x[15] != 0x2A) {
+          id(crc_errors)++;
+          ESP_LOGW("akeron_data", "Trame %c rejetée : CRC calculé %02X, reçu %02X, fin %02X (%s)",
+                   x[0], crc, x[14], x[15], format_hex_pretty(x).c_str());
+          if (id(crc_check_enabled)) return 0;
+        }
         // Trame M
         if (x[0] == 77 ) {
           ESP_LOGD("akeron_data", "Akeron Frame M");
@@ -988,7 +1065,8 @@ sensor:
           id(akeron_water_temp).publish_state(water_temp);
 
           float salt = ( ( x[7] * 256 ) +  x[8] ) / 10.0;
-          if ( (salt <= 10 ) && ( salt >= 0) ) {
+          // [corr. 7] plage absolue de l'appli Corelec : 1-40 g/l (l'ancien filtre <= 10 masquait le réglage >15 g/l)
+          if ( (salt <= 40 ) && ( salt >= 0) ) {
             id(akeron_salt).publish_state(salt);
           }
 
@@ -1010,6 +1088,10 @@ sensor:
             break;
             case 11:
               id(akeron_alarm_text).publish_state("E.11 PH Stable");
+            break;
+            case 12:
+              // [corr. 2] l'appli affiche l'icône flow switch pour E12
+              id(akeron_alarm_text).publish_state("E.12 Pas de débit (flow switch)");
             break;
             case 13:
               id(akeron_alarm_text).publish_state("E.13 PH Low");
@@ -1047,19 +1129,18 @@ sensor:
           int alarm_rdx = (x[10] >> 4) & 0x0F;
           id(akeron_alarm_rdx).publish_state(alarm_rdx);
 
-          char warning_text[256];
-
-          switch(warning) {
-            case 0:
-              id(akeron_warning_text).publish_state("No Warning");
-            break; 
-            case 4:
-              id(akeron_warning_text).publish_state("E.4 Alert 2. Salt or Water Temperature Default");
-            break; 
-            default:
-              sprintf(warning_text,"Unknown Warning %d", warning);
-              id(akeron_warning_text).publish_state(warning_text);
-              break;
+          // [corr. 1] Avertissements = champ de bits (appli Corelec, Vues/Mesure.cs) :
+          // 2 = sel (E2), 4 = température (E4), 8 = redox (E8), cumulables. Bit 0 : inconnu.
+          if (warning == 0) {
+            id(akeron_warning_text).publish_state("No Warning");
+          } else {
+            std::string w;
+            if (warning & 0x02) w += "E2 Sel ; ";
+            if (warning & 0x04) w += "E4 Température ; ";
+            if (warning & 0x08) w += "E8 Redox ; ";
+            if (warning & 0x01) w += "bit 0 inconnu ; ";
+            w.resize(w.size() - 3);
+            id(akeron_warning_text).publish_state(w);
           }
 
           bool ph_pump = x[11] & 0x80; //
@@ -1122,9 +1203,8 @@ sensor:
             id(akeron_ph_setpoint).publish_state(ph_setpoint);
 
             if ( id(akeron_ph_setpoint_number).state != ph_setpoint){
-              auto call = id(akeron_ph_setpoint_number).make_call();
-              call.set_value(ph_setpoint);
-              call.perform();
+              // publish_state (et non make_call().perform()) : affiche la valeur lue sans la réécrire dans l'Akeron
+              id(akeron_ph_setpoint_number).publish_state(ph_setpoint);
             }
           }
           else {
@@ -1151,9 +1231,8 @@ sensor:
           id(akeron_redox_setpoint).publish_state(redox_setpoint);
           
           if ( id(akeron_redox_setpoint_number).state != redox_setpoint){
-            auto call = id(akeron_redox_setpoint_number).make_call();
-            call.set_value(redox_setpoint);
-            call.perform();
+            // publish_state (et non make_call().perform()) : affiche la valeur lue sans la réécrire dans l'Akeron
+            id(akeron_redox_setpoint_number).publish_state(redox_setpoint);
           }
         }
         // Trame A
@@ -1188,6 +1267,10 @@ sensor:
             case 4:
               id(akeron_alarm_elx_text).publish_state("Alarm 4: Defaut Electrique court-circuit de l'appareil");
             break;
+            case 7:
+              // [corr. 2] l'appli affiche l'icône flow switch pour A7
+              id(akeron_alarm_elx_text).publish_state("Alarm 7: Pas de débit (flow switch)");
+            break;
             default:
               sprintf(alarm_elx_text,"Unknown Alarm Elx %d", alarm_elx);
               id(akeron_alarm_elx_text).publish_state(alarm_elx_text);
@@ -1197,9 +1280,8 @@ sensor:
           id(akeron_elx).publish_state(x[1]);
 
           if ( id(akeron_elx_setpoint_number).state != x[1]){
-            auto call = id(akeron_elx_setpoint_number).make_call();
-            call.set_value(x[1]);
-            call.perform();
+            // publish_state (et non make_call().perform()) : affiche la valeur lue sans la réécrire dans l'Akeron
+            id(akeron_elx_setpoint_number).publish_state(x[1]);
           }
 
           // A CONFIRMER !!!
@@ -1222,9 +1304,8 @@ sensor:
           uint8_t sal = x[9] & 0x03;
           if (sal <= 2) {
             if (id(akeron_salinite_select).active_index().value_or(99) != (size_t)sal) {
-              auto call = id(akeron_salinite_select).make_call();
-              call.set_index(sal);
-              call.perform();
+              // publish_state (et non make_call().perform()) : affiche la valeur lue sans la réécrire dans l'Akeron
+              id(akeron_salinite_select).publish_state((size_t)sal);
             }
           }
         }
@@ -1279,10 +1360,11 @@ number:
   - platform: template
     name: 'Akeron Elx Set'
     id: akeron_elx_setpoint_number
+    # [corr. 6] appli Corelec : production 5-100 %
     max_value: 100
-    min_value: 0
+    min_value: 5
     unit_of_measurement: '%'
-    step: 10
+    step: 5
     mode: slider
     optimistic: true
     icon: "mdi:electron-framework"
@@ -1319,8 +1401,9 @@ number:
   - platform: template
     name: "Value Calibrate Salt"
     id: salt_calibrate_value
+    # [corr. 6] plage d'étalonnage de l'appli Corelec : 3-35 g/l
     min_value: 3.0
-    max_value: 20.0
+    max_value: 35.0
     step: 0.1
     unit_of_measurement: "g/L"
     mode: box
@@ -1334,8 +1417,9 @@ number:
   - platform: template
     name: "Value Calibrate PH"
     id: ph_calibrate_value
-    min_value: 3.0
-    max_value: 9.5
+    # [corr. 6] plage d'étalonnage de l'appli Corelec : 6,5-8,5
+    min_value: 6.5
+    max_value: 8.5
     step: 0.01
     unit_of_measurement: "pH"
     mode: box
@@ -1350,8 +1434,9 @@ number:
   - platform: template
     name: "Value Calibrate Redox"
     id: redox_calibrate_value
-    min_value: 0
-    max_value: 1000
+    # [corr. 6] plage d'étalonnage de l'appli Corelec : 200-650 mV
+    min_value: 200
+    max_value: 650
     step: 1
     unit_of_measurement: "mV"
     mode: box
@@ -1366,8 +1451,9 @@ number:
   - platform: template
     name: "Value Calibrate Temp"
     id: temp_calibrate_value
-    min_value: 0.0
-    max_value: 50.0
+    # [corr. 6] plage d'étalonnage de l'appli Corelec : 8-40 °C
+    min_value: 8.0
+    max_value: 40.0
     step: 0.1
     unit_of_measurement: "°C"
     mode: box
@@ -1382,8 +1468,9 @@ number:
   - platform: template
     name: 'Akeron Redox Set'
     id: akeron_redox_setpoint_number
-    max_value: 1100
-    min_value: 400
+    # [corr. 6] appli Corelec : consigne 350-900 mV
+    max_value: 900
+    min_value: 350
     unit_of_measurement: 'mV'
     step: 10
     icon: "mdi:alpha-r-box-outline"
