@@ -1033,11 +1033,13 @@ sensor:
     lambda: 'return (float) id(crc_errors);'
     update_interval: 60s
 
-  # [corr. 10] Durée Sleep/Timer (trame A, bits 0-4) : unité non confirmée (jamais affichée par l'appli)
+  # [corr. 10] Durée Sleep/Timer (trame A, bits 0-4), jamais affichée par l'appli
   - platform: template
     name: "Durée Sleep Timer"
     id: akeron_st_duration
     icon: "mdi:timer-sand"
+    # [corr. 11] heures selon la notice (Sleep : 1-23 h ; Timer = mode 24h/24, N h sur 24)
+    unit_of_measurement: "h"
     accuracy_decimals: 0
     entity_category: diagnostic
 
@@ -1160,11 +1162,11 @@ sensor:
               id(akeron_alarm_text).publish_state("E.10 Error Reading PH");
             break;
             case 11:
-              id(akeron_alarm_text).publish_state("E.11 PH Stable");
+              id(akeron_alarm_text).publish_state("E.11 PH stagnant despite injections");  // [corr. 11] libellé de la notice
             break;
             case 12:
               // [corr. 2] l'appli affiche l'icône flow switch pour E12
-              id(akeron_alarm_text).publish_state("E.12 Pas de débit (flow switch)");
+              id(akeron_alarm_text).publish_state("E.12 Pas de débit (flow switch) - non documenté");  // [corr. 11] absent de la notice
             break;
             case 13:
               id(akeron_alarm_text).publish_state("E.13 PH Low");
@@ -1185,7 +1187,7 @@ sensor:
               id(akeron_alarm_text).publish_state("E.20 Redox too High");
             break;
             case 21:
-              id(akeron_alarm_text).publish_state("E.21 Redox Low");
+              id(akeron_alarm_text).publish_state("E.21 Redox Low (alert only, production on)");  // [corr. 11] notice : alerte, production maintenue
             break;
             case 22:
               id(akeron_alarm_text).publish_state("E.22 Redox really Low");
@@ -1332,13 +1334,17 @@ sensor:
               id(akeron_alarm_elx_text).publish_state("Alarm 1: Defaut Electrode en court-circuit ou entartée");
             break;
             case 2:
-              id(akeron_alarm_elx_text).publish_state("Alarm 2: Defaut Salinite ou de temperature eau");
+              id(akeron_alarm_elx_text).publish_state("Alerte 2: Defaut salinite ou temperature eau (ou electrode en fin de vie)");  // [corr. 11] alerte, pas alarme
             break;
             case 3:
               id(akeron_alarm_elx_text).publish_state("Alarm 3: Defaut Electrode usée ou mal connectée");
             break;
             case 4:
               id(akeron_alarm_elx_text).publish_state("Alarm 4: Defaut Electrique court-circuit de l'appareil");
+            break;
+            case 6:
+              // [corr. 11] notice Akeron : protection température élevée (local > 50 °C + pleine puissance)
+              id(akeron_alarm_elx_text).publish_state("Alarm 6: Protection temperature elevee de l'appareil");
             break;
             case 7:
               // [corr. 2] l'appli affiche l'icône flow switch pour A7
@@ -1383,7 +1389,7 @@ sensor:
           }
 
           // [corr. 10] Sleep / Timer : trame[13] -> x[12] (appli : Sleep = bits 6+5, Timer = bits 7+5,
-          // durée = bits 0-4 ; l'appli ne l'affiche jamais, unité non confirmée)
+          // durée = bits 0-4, en heures d'après la notice)
           bool st_on = x[12] & 0x20;
           id(akeron_sleep).publish_state(st_on && (x[12] & 0x40));
           id(akeron_timer).publish_state(st_on && (x[12] & 0x80));
@@ -1614,8 +1620,9 @@ number:
     name: "Cover Production"
     id: akeron_cover_production
     entity_category: config
+    # [corr. 11] notice : ratio de la production normale en mode volet, 5 à 50 % (30 % par défaut)
     min_value: 5
-    max_value: 100
+    max_value: 50
     step: 1
     unit_of_measurement: "%"
     mode: slider
