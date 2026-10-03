@@ -1,0 +1,7 @@
+# Secrets (Wi-Fi, OTA password, API encryption key): never commit
+secrets.yaml
+
+# ESPHome build artifacts
+.esphome/
+/.pioenvs/
+/.piolibdeps/
