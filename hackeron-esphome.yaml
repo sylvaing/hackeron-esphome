@@ -1036,6 +1036,12 @@ sensor:
     service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
     characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
     notify: true
+    # [corr. 8] Ce capteur ne sert qu'à recevoir les notifications et décoder les trames (il vaut toujours 0).
+    # internal : pas d'entité dans HA. update_interval never : plus de lecture périodique de la
+    # caractéristique, que l'Akeron refuse ("Error reading char at handle 8" / "Cannot poll, not connected").
+    # L'abonnement aux notifications est fait à la connexion, indépendamment de cette lecture.
+    internal: true
+    update_interval: never
     lambda: |-
       std::string value2(x.begin(), x.end());
       // std::string rawhex = format_hex_pretty((uint8_t *) value2.c_str(), value2.size()).c_str();
