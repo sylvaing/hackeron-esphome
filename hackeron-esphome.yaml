@@ -124,6 +124,13 @@ script:
           id(akeron_cfg_ph_minus).publish_state(false);
           id(akeron_cover_active).publish_state(false);
           id(akeron_cover_force).publish_state(false);
+          id(akeron_sleep).publish_state(false);
+          id(akeron_timer).publish_state(false);
+          id(akeron_st_duration).publish_state(NAN);
+          id(akeron_temp_alarm_min).publish_state(NAN);
+          id(akeron_temp_warning_min).publish_state(NAN);
+          id(akeron_salt_warning_min).publish_state(NAN);
+          id(akeron_salt_alarm_min).publish_state(NAN);
           id(akeron_warning_text).publish_state("");
           id(akeron_alarm_text).publish_state("");
           id(akeron_alarm_elx_text).publish_state("");
@@ -612,6 +619,13 @@ interval:
                   //end CRC
                   return result;
 
+            - delay: 5s
+            #trame D 68 : seuils température / sel [corr. 10]
+            - ble_client.ble_write:
+                service_uuid: '0bd51666-e7cb-469b-8e4d-2742f1ba77cc'
+                characteristic_uuid: 'E7ADD780-B042-4876-AAE1-112855353CC1'
+                value: [ 42, 82, 63, 68, 3, 42]
+
 # Boutons d'activation/arrêt du boost électrolyseur
 button:
   - platform: template
@@ -870,6 +884,17 @@ binary_sensor:
     name: "Boost 2h"
     id: akeron_boost
 
+  # [corr. 10] Modes Sleep / Timer (trame A)
+  - platform: template
+    name: "Mode Sleep"
+    id: akeron_sleep
+    icon: "mdi:sleep"
+
+  - platform: template
+    name: "Mode Timer"
+    id: akeron_timer
+    icon: "mdi:timer-outline"
+
   - platform: ble_presence
     mac_address: ${mac_akeron}
     name: "Device Present"
@@ -1007,6 +1032,49 @@ sensor:
     state_class: total_increasing
     lambda: 'return (float) id(crc_errors);'
     update_interval: 60s
+
+  # [corr. 10] Durée Sleep/Timer (trame A, bits 0-4) : unité non confirmée (jamais affichée par l'appli)
+  - platform: template
+    name: "Durée Sleep Timer"
+    id: akeron_st_duration
+    icon: "mdi:timer-sand"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  # [corr. 10] Seuils lus dans la trame D
+  - platform: template
+    name: "Seuil alarme température basse"
+    id: akeron_temp_alarm_min
+    unit_of_measurement: "°C"
+    device_class: temperature
+    icon: "mdi:thermometer-alert"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Seuil alerte température basse"
+    id: akeron_temp_warning_min
+    unit_of_measurement: "°C"
+    device_class: temperature
+    icon: "mdi:thermometer-low"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Seuil alerte sel bas"
+    id: akeron_salt_warning_min
+    unit_of_measurement: "g/L"
+    icon: "mdi:shaker-outline"
+    accuracy_decimals: 1
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Seuil alarme sel bas"
+    id: akeron_salt_alarm_min
+    unit_of_measurement: "g/L"
+    icon: "mdi:shaker-outline"
+    accuracy_decimals: 1
+    entity_category: diagnostic
 
   - platform: template
     name: "PH Threshold Max"
@@ -1313,6 +1381,26 @@ sensor:
               id(akeron_salinite_select).publish_state((size_t)sal);
             }
           }
+
+          // [corr. 10] Sleep / Timer : trame[13] -> x[12] (appli : Sleep = bits 6+5, Timer = bits 7+5,
+          // durée = bits 0-4 ; l'appli ne l'affiche jamais, unité non confirmée)
+          bool st_on = x[12] & 0x20;
+          id(akeron_sleep).publish_state(st_on && (x[12] & 0x40));
+          id(akeron_timer).publish_state(st_on && (x[12] & 0x80));
+          id(akeron_st_duration).publish_state(x[12] & 0x1F);
+        }
+        // [corr. 10] Trame D : seuils (appli Corelec, Trames.ExtractionTrameD)
+        // trame[5] -> x[4] : alarme température basse (E18), °C
+        // trame[7] -> x[6] : alerte température basse (E4), °C
+        // trame[8] -> x[7] : alerte sel bas (E2), g/l x10
+        // trame[9] -> x[8] : alarme sel bas (E19), g/l x10
+        // (trame[4] et [6], seuils hauts de température, sont écrits par l'appli mais jamais relus : non exposés)
+        else if (x[0] == 68) {
+          ESP_LOGD("akeron_data", "Akeron Frame D");
+          if (x[4] != 0xFF) id(akeron_temp_alarm_min).publish_state(x[4]);
+          if (x[6] != 0xFF) id(akeron_temp_warning_min).publish_state(x[6]);
+          if (x[7] != 0xFF) id(akeron_salt_warning_min).publish_state(x[7] / 10.0f);
+          if (x[8] != 0xFF) id(akeron_salt_alarm_min).publish_state(x[8] / 10.0f);
         }
       }
       return 0;
