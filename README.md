@@ -1,5 +1,7 @@
 # hackeron-esphome
 
+> 🇫🇷 **Version française plus bas : [aller à la version française](#version-francaise).**
+
 **Bluetooth gateway between a Corelec / CCEI _Akeron_ pool regulator and Home Assistant, running on an ESP32 with ESPHome.**
 
 Akeron devices (salt chlorinators with optional pH and Redox regulation) can only be reached through the Corelec mobile app over Bluetooth Low Energy. This firmware turns a cheap ESP32 placed near the Akeron into a permanent bridge: it connects over BLE, reads every measurement and setting about every 30 seconds, and exposes them to Home Assistant as native entities. You can then chart the water, get notified on alarms, and change setpoints from Home Assistant, all without the phone app.
@@ -219,7 +221,7 @@ Older chlorinators driven by an external _Akeron Regul Redox_ through their flow
 - **One BLE client at a time**: if the Corelec app cannot connect while the ESP32 is connected, turn off **Connect to Akeron Device**, use the app, then turn it back on.
 - **No PIN needed**: the PIN code is only checked by the phone app, not by the BLE protocol.
 - **Dangerous functions are deliberately not exposed** (factory reset, model change, PIN change).
-- **Not decoded yet**: the meaning of E.12 and chlorinator alarm 5, the mapping of the `Alarm Rdx` field, and a few unused bytes. The date frame `J` (setting the clock) and the `B` frame are not used.
+- **Not fully decoded yet**: the exact meaning of E.12 on this generation, chlorinator alarm 5, the mapping of the `Alarm Rdx` field, and a few unused bytes. The date frame `J` (setting the clock) and the `B` frame are not used.
 
 ## Troubleshooting
 
@@ -258,3 +260,286 @@ The protocol was cross-checked against the official Corelec Android app and the 
 - Discussion (French): [HACF forum thread](https://forum.hacf.fr/t/hackeron-gateway-mqtt-electrolyseur-piscine/11947).
 
 Contributions and issues are welcome, especially logs from other Akeron models.
+
+---
+
+<a id="version-francaise"></a>
+
+# hackeron-esphome (version française)
+
+**Passerelle Bluetooth entre un régulateur de piscine Corelec / CCEI _Akeron_ et Home Assistant, sur un ESP32 avec ESPHome.**
+
+Les appareils Akeron (électrolyseurs au sel, avec régulation pH et Redox en option) ne sont accessibles que par l'application mobile Corelec, en Bluetooth Low Energy. Ce firmware transforme un ESP32 bon marché, placé près de l'Akeron, en passerelle permanente. Il se connecte en BLE, lit toutes les mesures et tous les réglages environ toutes les 30 secondes, et les expose à Home Assistant sous forme d'entités natives. Vous pouvez alors tracer l'historique de l'eau, être prévenu des alarmes et modifier les consignes depuis Home Assistant, sans l'application.
+
+```
+ ┌──────────────┐   BLE (GATT)    ┌──────────────┐  Wi-Fi / API ESPHome  ┌────────────────┐
+ │    Akeron    │ ◄─────────────► │    ESP32     │ ◄───────────────────► │ Home Assistant │
+ │  régulateur  │  portée ~5-10 m │ ce firmware  │   (chiffrée)          │    entités     │
+ └──────────────┘                 └──────────────┘                       └────────────────┘
+```
+
+## Sommaire
+
+- [Ce que vous obtenez](#fr-fonctions)
+- [Compatibilité](#fr-compatibilite)
+- [Fonctionnement](#fr-fonctionnement)
+- [Installation](#fr-installation)
+- [Liste des entités](#fr-entites)
+- [Codes d'alarme et d'alerte](#fr-alarmes)
+- [Bon à savoir / limites connues](#fr-bon-a-savoir)
+- [Dépannage](#fr-depannage)
+- [Notes sur le protocole](#fr-protocole)
+- [Crédits](#fr-credits)
+
+<a id="fr-fonctions"></a>
+
+## Ce que vous obtenez
+
+- **Mesures** : pH, Redox (mV), température de l'eau, sel (g/L).
+- **Consignes, en lecture et en écriture** : consigne pH, consigne Redox, production de chlore (ELX %), production en mode volet, plage de salinité.
+- **États** : production de chlore en cours, pompes pH en marche, flow switch, mode volet, boost, modes Sleep/Timer, modèle de l'appareil.
+- **Alarmes et alertes** avec des textes lisibles (régulateur, électrolyseur, champ d'alertes), ainsi que les seuils bas de température et de sel réglés dans l'appareil.
+- **Actions** : boost de 2 h (marche/arrêt), reset des alarmes, marche forcée de la pompe pH-, étalonnage des sondes (pH, Redox, sel, température), configuration des capteurs et des pompes.
+- **Robustesse** : recherche et reconnexion BLE automatiques, contrôle du CRC de chaque trame reçue (avec un compteur d'erreurs), entités remises à « inconnu » quand la liaison tombe, pour ne jamais afficher de valeurs périmées.
+
+<a id="fr-compatibilite"></a>
+
+## Compatibilité
+
+| | |
+|---|---|
+| **Appareil de piscine** | Gamme Corelec / CCEI Akeron : le firmware reconnaît les modèles _Regul 4Rx, Regul, Regul 3, Duo, Duo Regul 3, Duo Regul 4Rx, Akeron, Duo Regul 4Amp_. Développé et testé sur un **Duo Regul 4Rx** (électrolyseur + pH + Redox). Les entités des fonctions absentes de votre modèle (par exemple le Redox sur un appareil pH seul) restent simplement vides. |
+| **Passerelle** | Toute carte **ESP32** classique avec Bluetooth (le YAML vise `esp32dev`, framework ESP-IDF). Les autres variantes d'ESP32 avec BLE (C3, S3…) n'ont pas été testées et demanderaient un autre bloc `esp32:`. L'ESP8266 n'est **pas** pris en charge (pas de Bluetooth). |
+| **ESPHome** | 2025.5.0 ou plus récent (`min_version`) ; utilisé actuellement avec ESPHome 2026.9. |
+| **Home Assistant** | Toute version compatible avec votre ESPHome, via l'intégration ESPHome native. Pas besoin de MQTT. |
+
+> Certains Akeron envoient leurs trames autrement en BLE (une seule notification de 17 octets au lieu de `*` puis 16 octets). Ces appareils ne sont pas encore décodés. Si vous voyez `Connected` mais que toutes les mesures restent `unknown`, voir le [Dépannage](#fr-depannage).
+
+<a id="fr-fonctionnement"></a>
+
+## Fonctionnement
+
+1. **Découverte et connexion.** 30 s après le démarrage, l'ESP32 lance une recherche BLE passive. Quand il voit l'Akeron dont l'adresse MAC est configurée (`Device Present`), il s'y connecte (`ble_client`) et arrête la recherche. En cas de déconnexion, il vide les entités et relance la recherche.
+2. **Interrogation.** Toutes les 30 s, tant qu'il est connecté, l'ESP32 envoie cinq demandes de lecture espacées de 5 s : `M` (mesures et états), `S` (réglages pH), `A` (électrolyseur), `E` (Redox), `D` (seuils). L'Akeron répond à chacune par une notification, que le firmware vérifie (longueur + CRC) puis décode en entités.
+3. **Écriture.** Quand vous modifiez une consigne ou appuyez sur un bouton dans Home Assistant, l'ESP32 envoie une trame d'écriture où tous les octets valent `0xFF` (« ne pas modifier »), sauf le champ concerné. Trois secondes plus tard, il relit la trame : Home Assistant affiche donc ce que l'Akeron a réellement appliqué.
+4. **La relecture n'écrit jamais.** Les valeurs lues dans l'Akeron sont seulement *affichées* (`publish_state`), jamais renvoyées à l'appareil. Les anciennes versions les renvoyaient, ce qui pouvait remplacer en silence votre consigne de chlore par une valeur passagère (voir l'historique git, commit `dcb9ecf`).
+
+L'Akeron est souvent alimenté en même temps que la pompe de filtration. Dans ce cas, il disparaît chaque nuit et les entités affichent `unknown` jusqu'à la reprise de la filtration. C'est normal : l'ESP32 continue de chercher et se reconnecte tout seul en une minute environ.
+
+<a id="fr-installation"></a>
+
+## Installation
+
+### 1. Matériel
+
+- Une carte de développement ESP32 (ESP32-WROOM / « ESP32 DevKit ») et une alimentation USB 5 V.
+- Placez-la **à portée Bluetooth de l'Akeron**, idéalement dans le local technique, à quelques mètres de l'appareil. Les murs et les coffrets métalliques réduisent beaucoup la portée BLE ; vérifiez aussi que le Wi-Fi passe à cet endroit.
+
+### 2. Trouver l'adresse MAC Bluetooth de l'Akeron
+
+Utilisez une application de scan BLE sur un téléphone (par exemple _nRF Connect_ ou _LightBlue_), filtration en marche. L'Akeron s'annonce sous le nom **`CORELEC Regulateur`** ou **`REGUL.`**. Notez son adresse, par exemple `B4:E3:F9:65:71:74`.
+
+Fermez d'abord l'application Corelec : tant qu'un téléphone est connecté, l'Akeron peut cesser de s'annoncer.
+
+Autre méthode : flashez le firmware avec n'importe quelle adresse, décommentez le bloc `on_ble_advertise` sous `esp32_ble_tracker:` et lisez les logs. Chaque appareil BLE détecté y apparaît avec son nom et son adresse.
+
+### 3. Créer l'appareil dans ESPHome
+
+1. Dans l'**ESPHome Device Builder** (module complémentaire Home Assistant ou `esphome dashboard`), créez un nouvel appareil, choisissez ESP32, puis **éditez**-le et remplacez son contenu par [`hackeron-esphome.yaml`](hackeron-esphome.yaml).
+2. Renseignez l'adresse de votre Akeron dans le bloc `substitutions:` :
+   ```yaml
+   substitutions:
+     mac_akeron: "B4:E3:F9:65:71:74"   # adresse MAC BLE de votre Akeron
+   ```
+3. Si vous le souhaitez, changez `esphome: name:` (par défaut `hackeron-esp`). Ce nom détermine les identifiants des entités dans Home Assistant.
+4. Vérifiez que votre `secrets.yaml` (bouton **Secrets** d'ESPHome) définit :
+   ```yaml
+   wifi_ssid: "votre-ssid"
+   wifi_password: "votre-mot-de-passe-wifi"
+   api_encryption_key: "clé base64 de 32 octets"   # à générer sur https://esphome.io/components/api.html
+   ota_password: "un-mot-de-passe-pour-les-mises-a-jour-ota"
+   ```
+
+### 4. Flasher
+
+- **Premier flash en USB** : branchez l'ESP32 sur l'ordinateur qui fait tourner le tableau de bord (ou utilisez **Install → Manual download** puis flashez avec [web.esphome.io](https://web.esphome.io)). Sur certaines cartes, il faut maintenir le bouton **BOOT** au début du flash.
+- **Mises à jour suivantes** : **Install → Wirelessly** (OTA, sans fil).
+
+Si le Wi-Fi est injoignable, l'ESP32 ouvre un point d'accès de secours `Esp-Akeron Fallback Hotspot` (mot de passe = celui de votre Wi-Fi), avec un portail captif pour saisir de nouveaux identifiants Wi-Fi.
+
+### 5. L'ajouter à Home Assistant
+
+Home Assistant découvre l'appareil automatiquement (**Paramètres → Appareils et services → Découvert → ESPHome**). Validez et saisissez la clé `api_encryption_key`. Filtration en marche, **Connection Status** doit passer à `Connected` en moins d'une minute, et les mesures doivent apparaître à l'interrogation suivante (30 s au plus).
+
+<a id="fr-entites"></a>
+
+## Liste des entités
+
+Les identifiants ci-dessous supposent le nom d'appareil `hackeron-esp` (par exemple `sensor.hackeron_esp_ph`). Les noms d'entités sont ceux du firmware, en anglais ou en français selon les cas.
+
+### Mesures et états
+
+| Entité | Type | Description |
+|---|---|---|
+| PH | capteur (pH) | pH mesuré |
+| Redox | capteur (mV) | Potentiel Redox mesuré (plage acceptée 350-1000 mV, les autres lectures sont ignorées) |
+| Water Temperature | capteur (°C) | Température de l'eau |
+| Salt | capteur (g/L) | Taux de sel (0-40 g/L) |
+| PH Setpoint / Redox Setpoint | capteur | Consignes actuelles, lues dans l'appareil |
+| PH Threshold Min / Max | capteur (pH) | Seuils d'alarme pH |
+| Elx | capteur (%) | Production de chlore **appliquée à l'instant** (voir [Bon à savoir](#fr-bon-a-savoir)) |
+| Boost Time | capteur (min) | Temps de boost restant |
+| ELX Pump | binaire | Production de chlore active |
+| PH Pump / PH Minus Pump | binaire | Pompe doseuse pH+ / pH- en marche |
+| Forced Pump | binaire | Sorties forcées (marche manuelle) |
+| Flow Switch Active | binaire | Entrée flow switch (détecteur de débit) |
+| Cover Active | binaire | Mode volet actif |
+| Boost 2h | binaire | Boost en cours |
+| Mode Sleep / Mode Timer | binaire | Mode Sleep de l'Akeron (arrêt après N heures de filtration) / mode Timer (« 24h/24 », N/24 de chaque heure) |
+| Durée Sleep Timer | capteur (h) | N pour le mode Sleep/Timer (unité déduite de la notice, non confirmée) |
+| Model | texte | Modèle annoncé par l'appareil |
+
+### Commandes
+
+| Entité | Type | Description |
+|---|---|---|
+| Akeron PH Set | nombre | Consigne pH, 6,5-7,8, pas de 0,05 |
+| Akeron Redox Set | nombre | Consigne Redox, 350-900 mV, pas de 10 |
+| Akeron Elx Set | nombre | Consigne de production de chlore, 5-100 %, pas de 5 |
+| Cover Production | nombre | Production en mode volet, en proportion de la production normale, 5-50 % |
+| Cover Force | interrupteur | Forcer le mode volet |
+| Salinité | sélection | Plage de sel : 4-8, 8-15 ou > 15 g/L |
+| Boost Start 2h / Boost Stop | bouton | Lancer un boost de 2 heures / l'arrêter |
+| Reset Alarmes | bouton | Acquitter et réinitialiser les alarmes de l'appareil |
+| Force pH- | bouton | Faire tourner la pompe pH- en marche forcée (fonction « forçage des sorties pendant 1 minute » de l'Akeron) |
+
+### Configuration et étalonnage (catégorie _config_)
+
+| Entité | Type | Description |
+|---|---|---|
+| Config Pompe PH+ / Config Pompe PH- | interrupteur | Déclarer les pompes pH installées. Le firmware refuse de désactiver la dernière (l'appareil n'accepte pas « aucune pompe »). |
+| Config Capteur Temp / Config Capteur Sel / Config Flow Switch | interrupteur | Déclarer les capteurs installés |
+| Value Calibrate PH / Redox / Salt / Temp + Send Calibrate … | nombre + bouton | Étalonnage : mesurez l'eau avec un **instrument de référence**, saisissez cette valeur, puis appuyez sur le bouton _Send_ correspondant. Les plages suivent l'application officielle (pH 6,5-8,5, Redox 200-650 mV, sel 3-35 g/L, température 8-40 °C). |
+| Contrôle CRC trames | interrupteur | Active le contrôle du CRC des trames reçues (activé par défaut ; ne le couper que pour du débogage). |
+
+### Diagnostic
+
+| Entité | Description |
+|---|---|
+| Connection Status | `Scanning...`, `Found - Connecting...`, `Connected` ou `Idle` |
+| Device Present | Akeron vu dans les annonces BLE ; c'est ce qui déclenche la connexion. Passe normalement à « off » quelques minutes après la connexion, car un Akeron connecté cesse de s'annoncer. |
+| Connect to Akeron Device | À couper pour libérer la liaison BLE (par exemple pour utiliser l'application Corelec), à rallumer pour se reconnecter |
+| BLE Scanner | Lance / arrête la recherche BLE |
+| Alarm, Alarm Text | Alarme du régulateur (code et texte) |
+| Warning, Warning Text | Alertes (champ de bits, les textes peuvent se cumuler : `E2 Sel ; E4 Température`) |
+| Elx Alarm, Alarm Elx Text | Alarme de l'électrolyseur |
+| Alarm Rdx | Champ brut d'alarme Redox |
+| Seuil alarme / alerte température basse, Seuil alerte / alarme sel bas | Seuils réglés dans l'appareil |
+| Erreurs CRC | Nombre de trames reçues rejetées pour CRC incorrect |
+| hackeron restart | Redémarrer l'ESP32 |
+
+<a id="fr-alarmes"></a>
+
+## Codes d'alarme et d'alerte
+
+Sources : les notices officielles Corelec ([2021 _SALT DUO / SALT REGUL pH / REGUL3 / REGUL4 Rx_](https://www.easy-blue.fr/uploads/pdf/2021-akeron-duo-notice.pdf), section 6, qui correspond à la génération Bluetooth gérée ici ; les notices plus récentes _SALT DUO V2_ et _REGUL REDOX 1.4_ sur [akeron.fr](https://www.akeron.fr/nos-supports-techniques/documentation)), ainsi que l'application Corelec _Regul'App_ décompilée pour l'emplacement de chaque code dans les trames. Les seuils indiqués sont les valeurs d'usine (les entités de diagnostic `Seuil …` montrent ceux réellement réglés).
+
+**Alarmes du régulateur** (`Alarm` / `Alarm Text`)
+
+| Code | Signification | Effet sur l'appareil | Que faire |
+|---|---|---|---|
+| E.10 | Erreur de lecture de la sonde pH : lecture < 5,2 ou > 9,5 (5,5 sur les appareils V2) | Régulation pH inhibée, production de chlore maintenue | Contrôler le pH par un autre moyen, rééquilibrer l'eau, vérifier ou changer la sonde |
+| E.11 | pH stagnant : pas de variation significative malgré plusieurs injections | Régulation pH inhibée, production de chlore maintenue | Bidon vide, pompe défectueuse, tube péristaltique percé, crépine bouchée, tuyau pincé ou obstrué |
+| E.12 | Absente de la notice 2021. Sur cette génération, l'application Corelec affiche l'icône **flow switch** (très probablement absence de débit côté régulateur). Les appareils Wi-Fi plus récents _DUO+ V2_ réutilisent E.12 pour « eau sous 15 °C » (simple alerte) | ? | Vérifier le débit ; vérifier la température de l'eau |
+| E.13 | pH sous le seuil d'alarme (6 par défaut) | Régulation pH inhibée, production de chlore maintenue (appareils V2 : simple alerte) | En général bidon de correcteur vide et dérive naturelle du pH : rééquilibrer l'eau, remplacer le bidon |
+| E.14 | pH au-dessus du seuil d'alarme (9 par défaut) | Comme E.13 | Comme E.13 |
+| E.15 | Correction inversée : le pH évolue dans le mauvais sens (de 3 % dans les 10 min suivant une injection) | Injection bloquée jusqu'à la prochaine mise en marche. À la 3e fois, bloquée jusqu'à un reset des alarmes. Production de chlore maintenue | Mauvais produit sur la pompe : mettre le bon bidon sur la bonne pompe, rééquilibrer l'eau, puis **Reset Alarmes** |
+| E.18 | Eau trop froide : sous 12 °C | Production de chlore arrêtée (l'appareil affiche `!!!` à la place de la température). Sous 15 °C, simple alerte (voir `E4`) | Hiverner la piscine |
+| E.19 | Sel trop bas : sous 2,0 g/L | Production de chlore arrêtée (« Sécurité salinité trop faible ») | Trop de remplissages, fuite, ou sel insuffisant en début de saison : faire l'appoint jusqu'à 5 g/L |
+| E.20 | Redox trop fort : au-dessus de 950 mV | Production de chlore arrêtée | Ajout de chlore manuel, bassin couvert ou sonde incohérente : découvrir le bassin, attendre que le taux redescende, contrôler TAC / pH / TH / stabilisant / sel |
+| E.21 | Redox faible : sous 350 mV | Simple alerte, production maintenue | Sel trop bas, temps de filtration trop court, stabilisant hors plage, étalonnage de la sonde, eau déséquilibrée ou électrolyseur défectueux |
+| E.22 | Redox trop faible : sous 250 mV (sonde défectueuse ou débranchée, ou chlore très bas) | Production de chlore arrêtée | Fréquent à la mise en service : chlore choc ou relance de la production par **Boost Start 2h**. Contrôler TH / TAC / stabilisant (au-delà de 30 ppm, c'est trop), vérifier la connexion de la sonde, la tester dans des solutions à 450 / 650 mV |
+
+E.10 à E.22 sont lus dans l'octet d'alarme principal. Les alarmes Redox pourraient aussi arriver par le champ séparé `Alarm Rdx`, dont la numérotation n'est pas encore connue (il n'a jamais été vu différent de zéro sur l'appareil de test).
+
+**Alertes** (`Warning` / `Warning Text`, champ de bits : plusieurs peuvent s'afficher en même temps)
+
+| Texte | Signification (affichage de l'appareil) |
+|---|---|
+| `E2 Sel` | Alerte `!.!` : sel sous 3,0 g/L (production maintenue jusqu'à 2,0 g/L), ou eau au-dessus de 35 °C ou sous 15 °C (la mesure de sel ne peut plus être corrigée en température) |
+| `E4 Température` | Eau sous 15 °C (`!!!` en alternance avec la température), production maintenue |
+| `E8 Redox` | Probablement l'alerte E.21 « Redox faible » (déduit, non confirmé) |
+
+L'écran connaît aussi l'alerte `?.?` : la sonde de sel n'est pas étalonnée ou doit l'être à nouveau. Elle utilise probablement le bit d'alerte restant, encore jamais observé.
+
+**Alarmes de l'électrolyseur** (`Elx Alarm` / `Alarm Elx Text`)
+
+| Code | Signification | Que faire |
+|---|---|---|
+| 1 | Électrode en court-circuit ou **entartrée**, ou taux de sel supérieur à la plage sélectionnée | Contrôler les plaques. Nettoyer l'électrode dans une solution de nettoyage. Vérifier la plage **Salinité** |
+| 2 | Alerte (pas une alarme) : manque de sel, eau trop froide, ou électrode en fin de vie | Faire l'appoint de sel jusqu'à 5 g/L. Sous 15 °C, éteindre l'électrolyseur. Changer l'électrode au-delà d'environ 15 000 h |
+| 3 | Électrode usée, absente ou mal connectée, pas de sel dans l'eau, ou **manque d'eau / air dans le vase** | Vérifier la connectique et le taux de sel, éliminer les prises d'air du circuit hydraulique |
+| 4 | Court-circuit électrique de l'appareil (plaques qui se touchent, tartre) | Débrancher l'électrode : si l'alarme reste, l'appareil est en cause. Sinon, replacer ou nettoyer l'électrode |
+| 5 | Non documentée | — |
+| 6 | Surchauffe de l'appareil (local à plus de 50 °C et fonctionnement à pleine puissance) | Arrêter l'appareil, ventiler le local technique, redémarrer |
+| 7 | **Pas de débit** dans le vase : détecteur de débit hors service ou mal placé, vanne fermée, pompe de filtration arrêtée, ou appareil non asservi à la pompe | Rétablir le débit, vérifier ou changer le détecteur, éliminer les prises d'air |
+
+Des alarmes 1 ou 3 brèves, d'environ une minute, au démarrage de la filtration sont courantes (air dans le vase). N'intervenez que si elles durent.
+
+Les électrolyseurs plus anciens pilotés par un _Akeron Regul Redox_ externe via leur entrée flow switch affichent aussi l'alarme 7 dès que le Redox dépasse sa consigne. C'est ainsi que ces installations suspendent normalement la production.
+
+<a id="fr-bon-a-savoir"></a>
+
+## Bon à savoir / limites connues
+
+- **`Elx` est la production appliquée à l'instant, pas une consigne figée.** L'Akeron inverse régulièrement la polarité de l'électrode (toutes les 4 h par défaut). Il suspend alors la production pendant une minute environ et annonce **10 %**. Il peut aussi annoncer **100 %** pendant quelques secondes. Ces pics sont normaux et la valeur revient seule à votre consigne. Le curseur **Akeron Elx Set** suit le même octet, car l'appareil utilise un seul champ pour les deux.
+- **Fréquence de mise à jour** : chaque valeur est rafraîchie environ toutes les 30 s. Après une écriture, la valeur est relue 3 s plus tard.
+- **Certaines trames sont perdues** : l'Akeron envoie de temps en temps des trames tronquées (octets perdus à l'intérieur même de l'appareil). Le firmware les écarte (longueur ou CRC incorrects). Les valeurs se mettent simplement à jour à l'interrogation suivante, il n'y a rien à faire.
+- **Un seul client BLE à la fois** : si l'application Corelec ne parvient pas à se connecter pendant que l'ESP32 est connecté, coupez **Connect to Akeron Device**, utilisez l'application, puis rallumez-le.
+- **Pas de code PIN** : le code PIN n'est vérifié que par l'application mobile, pas par le protocole BLE.
+- **Les fonctions dangereuses ne sont volontairement pas exposées** (réinitialisation usine, changement de modèle, changement de PIN).
+- **Pas encore entièrement décodé** : le sens exact d'E.12 sur cette génération, l'alarme 5 de l'électrolyseur, la correspondance du champ `Alarm Rdx` et quelques octets inutilisés. La trame de date `J` (mise à l'heure) et la trame `B` ne sont pas utilisées.
+
+<a id="fr-depannage"></a>
+
+## Dépannage
+
+| Symptôme | À vérifier |
+|---|---|
+| `Connection Status` reste sur `Scanning...` | L'Akeron est-il alimenté (filtration en marche) ? L'adresse MAC est-elle correcte ? L'ESP32 est-il à portée ? Un téléphone y est-il connecté avec l'application Corelec ? |
+| `Connected` mais toutes les valeurs restent `unknown` | Consultez les logs ESPHome. Si `Erreurs CRC` augmente, coupez **Contrôle CRC trames** et transmettez les logs. Si rien n'est décodé du tout, votre appareil envoie peut-être des trames de 17 octets : décommentez la ligne de log `raw_hex` du capteur `akeron_data`, reflashez et ouvrez une issue avec la sortie. |
+| `Error reading char at handle …` dans d'anciens logs | Corrigé : le capteur interne `akeron_data` n'est plus interrogé (notifications seulement). |
+| Une consigne change toute seule | Vérifiez que votre version inclut le commit `dcb9ecf` (la relecture n'est plus écrite dans l'appareil). De courts pics de `Elx` sont normaux (voir plus haut). |
+| Wi-Fi perdu | Connectez-vous au point d'accès `Esp-Akeron Fallback Hotspot` pour reconfigurer le Wi-Fi. |
+
+Étiquettes de log utiles (réglées dans `logger:`, niveau `debug` par défaut) : `akeron_data` (trames décodées), `akeron send` (chaque écriture envoyée à l'appareil), `ble_client`, `ble_scanner`.
+
+<a id="fr-protocole"></a>
+
+## Notes sur le protocole
+
+Le protocole a été vérifié par rapport à l'application Android officielle de Corelec et à la notice Akeron.
+
+- **GATT** : service `0bd51666-e7cb-469b-8e4d-2742f1ba77cc`, une seule caractéristique `e7add780-b042-4876-aae1-112855353cc1` pour les écritures et les notifications.
+- **Demande de lecture** (6 octets) : `2A 52 3F <mnémonique> CRC 2A`, soit `* R ? X crc *`.
+- **Réponse / écriture** (17 octets) : `2A <mnémonique> d2 … d14 CRC 2A`. **CRC = XOR** des octets 0 à 14. Dans une écriture, `0xFF` signifie « ne pas modifier ».
+- **Mnémoniques** : `M` mesures et états, `S` pH, `E` Redox, `A` électrolyseur, `D` seuils et sorties forcées, `B` (inconnue), `J` date.
+- Sur cet appareil, chaque réponse arrive en deux notifications : `*` seul, puis 16 octets commençant par la mnémonique. Dans le YAML, `x[i]` correspond donc à l'octet `i+1` de la trame de 17 octets.
+
+| Trame | Champs principaux (position dans la trame de 17 octets) |
+|---|---|
+| M | 2-3 pH ×100 · 4-5 Redox mV · 6-7 température ×10 · 8-9 sel ×10 · 10 alarme · 11 alertes (bits 0-3) + alarme Redox (bits 4-7) · 12 modèle (bits 0-3) + sorties (filtration, chlore, pH-, pH+) · 13 bits de configuration |
+| S | 2-3 consigne pH ×100 · 10-11 / 12-13 seuils d'alarme pH max / min ×100 |
+| E | 2-3 consigne Redox mV |
+| A | 2 production % · 3-4 boost en minutes · 9 production volet % · 10 plage de sel + flow switch + bits volet · 12 alarme électrolyseur · 13 bits Sleep/Timer + durée |
+| D | 4-7 seuils de température · 8 / 9 alerte / alarme sel ×10 · 10 sorties forcées (écriture) |
+
+<a id="fr-credits"></a>
+
+## Crédits
+
+- [Hackeron](https://github.com/sylvaing/Hackeron) : la passerelle Akeron ⇄ MQTT d'origine et la rétro-ingénierie du protocole.
+- Portage ESPHome par **emoulin**.
+- Discussion : [fil du forum HACF](https://forum.hacf.fr/t/hackeron-gateway-mqtt-electrolyseur-piscine/11947).
+
+Les contributions et les issues sont les bienvenues, en particulier les logs d'autres modèles Akeron.
