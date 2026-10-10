@@ -165,37 +165,51 @@ Some entity names are in French. They come from the original project, and renami
 
 ## Alarm and warning codes
 
-Meanings come from the official manual (_Akeron SALT / DUO SALT REGUL pH / REGUL3 / REGUL4 Rx_, 2021, section 6) and from the Corelec app. Thresholds are the factory defaults.
+Sources: the official Corelec manuals ([2021 _SALT DUO / SALT REGUL pH / REGUL3 / REGUL4 Rx_](https://www.easy-blue.fr/uploads/pdf/2021-akeron-duo-notice.pdf), section 6, which matches the Bluetooth generation handled here; the newer _SALT DUO V2_ and _REGUL REDOX 1.4_ manuals from [akeron.fr](https://www.akeron.fr/nos-supports-techniques/documentation)), plus the decompiled Corelec _Regul'App_ for where each code sits in the frames. Thresholds are the factory defaults (the `Seuil …` diagnostic entities show the ones actually configured).
 
 **Regulator alarms** (`Alarm` / `Alarm Text`)
 
-| Code | Meaning | Effect |
-|---|---|---|
-| E.10 | pH probe reading error (pH < 5.2 or > 9.5): probe faulty or disconnected | pH regulation stopped |
-| E.11 | pH not moving despite several injections (empty can, pump, pipe, strainer) | pH regulation stopped |
-| E.12 | Not documented. The app shows the flow-switch icon (probably no flow) | ? |
-| E.13 / E.14 | pH below / above the alarm threshold (default 6 / 9) | pH regulation stopped |
-| E.15 | Reverse correction: pH moves the wrong way after injection (wrong product on the pump) | Injection blocked; after the 3rd time, until **Reset Alarmes** |
-| E.18 | Water too cold (< 12 °C) | Chlorine production stopped |
-| E.19 | Salt too low (< 2.0 g/L) | Chlorine production stopped |
-| E.20 | Redox too high (> 950 mV) | Production stopped |
-| E.21 | Redox low (< 350 mV) | Warning only |
-| E.22 | Redox too low (< 250 mV): very low chlorine or faulty probe | Production stopped |
+| Code | Meaning | Effect on the device | What to do |
+|---|---|---|---|
+| E.10 | pH probe reading error: reading < 5.2 or > 9.5 (5.5 on V2 units) | pH regulation inhibited, chlorine production continues | Check the pH with another test, rebalance the water, check or replace the probe |
+| E.11 | pH stagnant: no significant change despite several injections | pH regulation inhibited, chlorine production continues | Empty can, faulty pump, split peristaltic tube, clogged strainer, pinched or blocked pipe |
+| E.12 | Not described in the 2021 manual. On this generation the Corelec app shows the **flow-switch** icon for it (most likely no flow on the regulator side). The newer Wi-Fi _DUO+ V2_ units reuse E.12 for "water below 15 °C" (alert only) | ? | Check the flow; check the water temperature |
+| E.13 | pH below the alarm threshold (default 6) | pH regulation inhibited, chlorine production continues (V2 units: alert only) | Usually an empty corrector can and a natural pH drift: rebalance the water, replace the can |
+| E.14 | pH above the alarm threshold (default 9) | Same as E.13 | Same as E.13 |
+| E.15 | Reverse correction: pH moves the wrong way (by 3 % within 10 min after an injection) | Injection blocked until the next power-on. On the 3rd occurrence, blocked until an alarm reset. Chlorine production continues | Wrong product on the pump: put the right can on the right pump, rebalance the water, then **Reset Alarmes** |
+| E.18 | Water too cold: below 12 °C | Chlorine production stopped (the device shows `!!!` instead of the temperature). Below 15 °C there is only an alert (see `E4`) | Winterize the pool |
+| E.19 | Salt too low: below 2.0 g/L | Chlorine production stopped ("Sécurité salinité trop faible") | Too much refilling, a leak, or not enough salt at season start: add salt up to 5 g/L |
+| E.20 | Redox too high: above 950 mV | Chlorine production stopped | Manual chlorine added, pool covered, or inconsistent probe: uncover the pool, wait for the level to drop, check TAC / pH / TH / stabiliser / salt |
+| E.21 | Redox low: below 350 mV | Alert only, production continues | Low salt, filtration time too short, stabiliser out of range, probe calibration, unbalanced water, or a faulty chlorinator |
+| E.22 | Redox too low: below 250 mV (faulty or disconnected probe, or very low chlorine) | Chlorine production stopped | Common at commissioning: shock-chlorinate or restart production with **Boost Start 2h**. Check TH / TAC / stabiliser (> 30 ppm is too much), check the probe connection, test the probe in 450 / 650 mV solutions |
 
-**Warnings** (`Warning Text`, cumulative): `E2 Sel` = salt below 3.0 g/L or temperature outside 15-35 °C; `E4 Température` = water below 15 °C; `E8 Redox` = low Redox (probably E.21).
+E.10 to E.22 are read from the main alarm byte. The Redox alarms may instead come through the separate `Alarm Rdx` field, whose numbering is not known yet (it has never been seen non-zero on the test unit).
 
-**Chlorinator alarms** (`Alarm Elx Text`)
+**Warnings** (`Warning` / `Warning Text`, a bit field, so several can show at once)
 
-| Code | Meaning |
+| Text | Meaning (on the device display) |
 |---|---|
-| 1 | Cell short-circuited or **scaled**, or salt range set too low: clean the cell |
-| 2 | Warning: low salt or cold water, or cell near end of life |
-| 3 | Cell worn out or badly connected, no salt, or **no water / air in the cell housing** |
-| 4 | Electrical short-circuit in the device |
-| 6 | Device over-temperature (technical room too hot) |
-| 7 | **No flow** in the cell housing (flow switch, closed valve, pump stopped) |
+| `E2 Sel` | `!.!` alert: salt below 3.0 g/L (production continues down to 2.0 g/L), or water temperature above 35 °C or below 15 °C (the salt reading can no longer be temperature-compensated) |
+| `E4 Température` | Water below 15 °C (`!!!` alternating with the temperature), production continues |
+| `E8 Redox` | Probably the E.21 "Redox low" alert (deduced, not confirmed) |
 
-Short alarms 1 or 3 lasting a minute when filtration starts are common (air in the cell housing). Act only if they persist.
+The display also has a `?.?` alert, meaning the salt probe is not calibrated or needs recalibrating. It probably uses the remaining warning bit, which has not been observed yet.
+
+**Chlorinator alarms** (`Elx Alarm` / `Alarm Elx Text`)
+
+| Code | Meaning | What to do |
+|---|---|---|
+| 1 | Cell short-circuited or **scaled**, or salt level above the selected salt range | Check the plates. Clean the cell in a cleaning solution. Check the **Salinité** range |
+| 2 | Alert (not an alarm): low salt, water too cold, or cell near end of life | Add salt up to 5 g/L. Below 15 °C, switch the chlorinator off. Replace the cell after about 15,000 h |
+| 3 | Cell worn out, missing or badly connected, no salt in the water, or **no water / air in the cell housing** | Check the connection and the salt level, remove air leaks in the hydraulic circuit |
+| 4 | Electrical short-circuit in the device (plates touching, scale) | Disconnect the cell: if the alarm stays, the device is at fault. Otherwise reseat or clean the cell |
+| 5 | Not documented | — |
+| 6 | Device over-temperature (room above 50 °C while running at full power) | Stop the device, ventilate the technical room, restart |
+| 7 | **No flow** in the cell housing: flow detector faulty or badly placed, closed valve, filtration pump stopped, or device not slaved to the pump | Restore the flow, check or replace the flow detector, remove air leaks |
+
+Short alarms 1 or 3 lasting about a minute when filtration starts are common (air in the cell housing). Act only if they persist.
+
+Older chlorinators driven by an external _Akeron Regul Redox_ through their flow-switch input also show alarm 7 whenever the Redox is above its setpoint. That is the normal way such setups pause production.
 
 ## Good to know / known limitations
 
